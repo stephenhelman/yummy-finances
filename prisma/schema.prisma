@@ -1,0 +1,388 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Conventions
+// - Every table carries businessId (tenant-ready; single tenant for now).
+// - Money is Int cents. Bank amounts follow Plaid: positive = money OUT.
+// - Months are "YYYY-MM" strings in the business timezone.
+
+enum PlaidItemStatus {
+  OK
+  LOGIN_REQUIRED // user must re-authenticate via Link update mode
+  PENDING_EXPIRATION // bank consent expires soon; reconnect before it lapses
+  ERROR // bank/Plaid-side problem that reconnecting won't fix; see lastErrorCode
+}
+
+enum CategorySection {
+  REVENUE
+  COGS
+  OPEX
+  OTHER
+  NON_PL // sales tax, tips, owner draws, loan principal, capex, transfers
+}
+
+enum RuleMatchType {
+  EXACT
+  CONTAINS
+  REGEX
+}
+
+enum TransactionKind {
+  EXPENSE
+  CLOVER_SETTLEMENT
+  TRANSFER
+  OWNER_DRAW
+  IGNORE
+}
+
+enum CategorySource {
+  NONE
+  RULE
+  MANUAL
+}
+
+enum SettlementMatchStatus {
+  MATCHED
+  NEEDS_REVIEW
+  UNMATCHED
+}
+
+enum SnapshotStatus {
+  DRAFT
+  LOCKED
+}
+
+// Which timestamp decided a Clover row's saleTime (see src/lib/clover/map.ts).
+enum SaleTimeSource {
+  CLIENT // device time (clientCreatedTime)
+  SERVER // createdTime
+}
+
+enum JobStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model Business {
+  id                   String   @id @default(cuid())
+  name                 String
+  timezone             String
+  fiscalYearStartMonth Int      @default(1)
+  ownerEmail           String
+  ccEmail              String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  plaidItems     PlaidItem[]
+  bankAccounts   BankAccount[]
+  bankTxns       BankTransaction[]
+  categories     Category[]
+  rules          Rule[]
+  cloverPayments CloverPayment[]
+  cloverRefunds  CloverRefund[]
+  settlements    Settlement[]
+  snapshots      MonthSnapshot[]
+  loginTokens    LoginToken[]
+  jobRuns        JobRun[]
+  auditLogs      AuditLog[]
+  cloverTenders  CloverTender[]
+}
+
+model PlaidItem {
+  id              String          @id @default(cuid())
+  businessId      String
+  business        Business        @relation(fields: [businessId], references: [id])
+  plaidItemId     String          @unique
+  environment     String // "sandbox" | "production": a sandbox Item is never the real one
+  accessTokenEnc  String // AES-256-GCM, see src/lib/crypto.ts
+  institutionName String?
+  status          PlaidItemStatus @default(OK)
+  lastError       String?
+  lastErrorCode   String? // Plaid error_code from the last health check; null when OK
+  lastCheckedAt   DateTime? // last successful /item/get health check
+  cursor          String? // /transactions/sync next_cursor, advanced only after a full page loop is persisted
+  lastSyncAt      DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  accounts BankAccount[]
+
+  // One Item per business per environment: Trial-plan Items are non-recyclable, so a
+  // double submit or race must not be able to create a second one.
+  @@unique([businessId, environment])
+}
+
+model BankAccount {
+  id                String    @id @default(cuid())
+  businessId        String
+  business          Business  @relation(fields: [businessId], references: [id])
+  plaidItemId       String
+  plaidItem         PlaidItem @relation(fields: [plaidItemId], references: [id])
+  plaidAccountId    String    @unique
+  name              String
+  mask              String?
+  type              String?
+  subtype           String?
+  // Only included accounts are synced. Defaulted from the Plaid type on insert
+  // (depository, credit = true; loan, investment, other = false). Once a user
+  // flips it (includedSetByUser) account refreshes never change it again.
+  included          Boolean   @default(false)
+  includedSetByUser Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  transactions BankTransaction[]
+
+  @@index([businessId])
+}
+
+model Category {
+  id         String          @id @default(cuid())
+  businessId String
+  business   Business        @relation(fields: [businessId], references: [id])
+  name       String
+  section    CategorySection
+  sortOrder  Int             @default(0)
+  isSystem   Boolean         @default(false)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  rules        Rule[]
+  transactions BankTransaction[]
+
+  @@unique([businessId, name])
+  @@index([businessId, section])
+}
+
+model Rule {
+  id             String        @id @default(cuid())
+  businessId     String
+  business       Business      @relation(fields: [businessId], references: [id])
+  pattern        String // compared against BankTransaction.normalizedMerchant
+  matchType      RuleMatchType @default(EXACT)
+  categoryId     String
+  category       Category      @relation(fields: [categoryId], references: [id])
+  priority       Int           @default(100) // lower runs first
+  amountMinCents Int?
+  amountMaxCents Int?
+  active         Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  transactions BankTransaction[]
+
+  @@unique([businessId, matchType, pattern])
+  @@index([businessId, active, priority])
+}
+
+model BankTransaction {
+  id                   String          @id @default(cuid())
+  businessId           String
+  business             Business        @relation(fields: [businessId], references: [id])
+  accountId            String
+  account              BankAccount     @relation(fields: [accountId], references: [id])
+  plaidTransactionId   String          @unique
+  pendingTransactionId String? // on a posted row: the pending row it replaces
+  pending              Boolean         @default(false)
+  date                 DateTime        @db.Date // Plaid posted/pending date
+  authorizedDate       DateTime?       @db.Date
+  amountCents          Int // positive = money out
+  rawDescription       String // Plaid original_description (falls back to name)
+  merchantName         String?
+  normalizedMerchant   String? // null until the rules step normalizes it
+  paymentChannel       String? // online | in store | other
+  pfcPrimary           String? // Plaid personal_finance_category
+  pfcDetailed          String?
+  pfcConfidence        String?
+  pfcVersion           String? // taxonomy version Plaid returned (v1 or v2)
+  kind                 TransactionKind @default(EXPENSE)
+  categoryId           String?
+  category             Category?       @relation(fields: [categoryId], references: [id])
+  categorySource       CategorySource  @default(NONE)
+  ruleId               String?
+  rule                 Rule?           @relation(fields: [ruleId], references: [id])
+  // Late: dated in an already-locked month. Rolls into the "Prior-month
+  // adjustments" line of adjustmentMonth (the open month it was found in).
+  isLate               Boolean         @default(false)
+  adjustmentMonth      String?
+  removedAt            DateTime? // Plaid reported it removed
+  supersededAt         DateTime? // a pending row replaced by its posted row
+  // Late adjustments: the amount this row contributed to the LOCKED snapshot of its month
+  // (0 if it arrived after the lock). Contribution to adjustmentMonth's "Prior-month
+  // adjustments" line = (removed ? 0 : amountCents) - adjustmentBaseCents.
+  adjustmentBaseCents  Int?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  settlement Settlement?
+
+  @@index([businessId, date])
+  @@index([businessId, categoryId])
+  @@index([businessId, kind, categoryId])
+}
+
+model CloverPayment {
+  id                String         @id @default(cuid())
+  businessId        String
+  business          Business       @relation(fields: [businessId], references: [id])
+  cloverId          String         @unique
+  createdTime       DateTime // server time
+  clientCreatedTime DateTime? // device time; differs from createdTime for offline payments
+  saleTime          DateTime // the date used for ALL month assignment
+  saleTimeSource    SaleTimeSource
+  amountCents       Int
+  taxCents          Int            @default(0)
+  tipCents          Int            @default(0)
+  result            String
+  orderId           String?
+  tenderId          String?
+  tenderLabel       String? // from /tenders; payment.tender only carries the id
+  isCash            Boolean        @default(false) // derived from the tender label
+  // Only result=SUCCESS payments count toward revenue. FAIL rows (retries share
+  // an order with the eventual SUCCESS) are stored but flagged excluded.
+  excluded          Boolean        @default(false)
+  isLate            Boolean        @default(false)
+  adjustmentMonth   String?
+  raw               Json // trimmed API object (no customers, notes or employee data)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  refunds CloverRefund[]
+
+  @@index([businessId, createdTime])
+  @@index([businessId, saleTime])
+}
+
+model CloverRefund {
+  id                String         @id @default(cuid())
+  businessId        String
+  business          Business       @relation(fields: [businessId], references: [id])
+  cloverId          String         @unique
+  cloverPaymentId   String? // Clover's payment id; paymentId is set once that payment is in our DB
+  paymentId         String?
+  payment           CloverPayment? @relation(fields: [paymentId], references: [id])
+  tenderId          String? // the refunded payment's tender
+  tenderLabel       String?
+  isCash            Boolean        @default(false)
+  createdTime       DateTime
+  clientCreatedTime DateTime?
+  saleTime          DateTime
+  saleTimeSource    SaleTimeSource
+  amountCents       Int // includes tax and tip per Clover docs
+  taxCents          Int            @default(0)
+  tipCents          Int            @default(0)
+  status            String
+  voided            Boolean        @default(false)
+  isLate            Boolean        @default(false)
+  adjustmentMonth   String?
+  raw               Json
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([businessId, createdTime])
+  @@index([businessId, cloverPaymentId])
+  @@index([businessId, saleTime])
+}
+
+model CloverTender {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+  cloverId   String
+  label      String
+  labelKey   String?
+  isCash     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([businessId, cloverId])
+}
+
+model Settlement {
+  id                String                @id @default(cuid())
+  businessId        String
+  business          Business              @relation(fields: [businessId], references: [id])
+  bankTransactionId String                @unique
+  bankTransaction   BankTransaction       @relation(fields: [bankTransactionId], references: [id])
+  periodStart       DateTime
+  periodEnd         DateTime
+  depositCents      Int
+  cloverGrossCents  Int
+  impliedFeeCents   Int
+  matchStatus       SettlementMatchStatus
+  note              String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  @@index([businessId, periodEnd])
+}
+
+// Immutable once LOCKED. The data columns are protected by a DB trigger
+// (see migration 0003) in addition to the lockMonth() guard in code.
+model MonthSnapshot {
+  id          String         @id @default(cuid())
+  businessId  String
+  business    Business       @relation(fields: [businessId], references: [id])
+  month       String // "YYYY-MM" in business timezone
+  status      SnapshotStatus @default(DRAFT)
+  dataJson    Json
+  inputsHash  String
+  lockedAt    DateTime?
+  // Delivery state: intentionally mutable after lock.
+  pdfBlobKey  String?
+  emailSentAt DateTime?
+  emailId     String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@unique([businessId, month])
+}
+
+model LoginToken {
+  id         String    @id @default(cuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id])
+  email      String
+  tokenHash  String    @unique // sha256 of the emailed token
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([businessId, email])
+}
+
+// Idempotency/visibility for cron jobs (e.g. job="monthly-close", period="2026-09").
+model JobRun {
+  id         String    @id @default(cuid())
+  businessId String
+  business   Business  @relation(fields: [businessId], references: [id])
+  job        String
+  period     String
+  status     JobStatus @default(RUNNING)
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  error      String?
+
+  @@unique([businessId, job, period])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+  actor      String
+  action     String
+  entity     String?
+  entityId   String?
+  payload    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([businessId, createdAt])
+}
