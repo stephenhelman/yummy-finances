@@ -1,4 +1,5 @@
 import { parseRedirectUri } from "@/lib/plaid-config";
+import { MIN_PASSCODE_LENGTH, passcodeStatus } from "@/lib/passcode";
 // Pure environment checks for the preflight. Reports variable NAMES only, never values.
 
 export type CheckStatus = "pass" | "fail" | "warn" | "info";
@@ -19,8 +20,6 @@ export const REQUIRED_VARS = [
   "PLAID_ENV",
   "CLOVER_MERCHANT_ID",
   "CLOVER_API_TOKEN",
-  "APPS_SCRIPT_URL",
-  "APPS_SCRIPT_SECRET",
   "BUSINESS_TIMEZONE", // preflight cross-checks it against Clover and the Business row
 ] as const;
 
@@ -30,7 +29,7 @@ export const CLI_ONLY_VARS = ["DIRECT_URL", "OWNER_EMAIL"] as const;
 /** Values that must never appear in output or error text. */
 export const SECRET_VARS = [
   "DATABASE_URL", "DIRECT_URL", "ENCRYPTION_KEY", "AUTH_SECRET", "CRON_SECRET",
-  "PLAID_SECRET", "CLOVER_API_TOKEN", "APPS_SCRIPT_URL", "APPS_SCRIPT_SECRET",
+  "PLAID_SECRET", "CLOVER_API_TOKEN", "APPS_SCRIPT_URL", "APPS_SCRIPT_SECRET", "LOGIN_PASSCODE",
 ] as const;
 
 /** Replaces any secret value found in text. Defense in depth for error messages from libraries. */
@@ -77,6 +76,22 @@ export function checkEnvVars(env: Env, context: "cli" | "server"): Check[] {
     const ok = /^https:\/\/script\.google\.com\/macros\/s\/[^/\s]+\/exec$/.test(env.APPS_SCRIPT_URL!.trim());
     checks.push({ name: "env: APPS_SCRIPT_URL", status: ok ? "pass" : "fail", message: ok ? "looks like a deployed web app (/exec)" : "must be the Apps Script web app URL: https://script.google.com/macros/s/.../exec" });
   }
+  // Login methods: at least one must work. Both mailer variables are needed for email sign-in.
+  const mailSet = present("APPS_SCRIPT_URL") && present("APPS_SCRIPT_SECRET");
+  const pass = passcodeStatus(env);
+  if (present("APPS_SCRIPT_URL") !== present("APPS_SCRIPT_SECRET")) {
+    checks.push({ name: "env: Apps Script mailer", status: "fail", message: "APPS_SCRIPT_URL and APPS_SCRIPT_SECRET must be set together" });
+  }
+  if (pass === "too_short") {
+    checks.push({ name: "auth: login methods", status: "fail", message: `LOGIN_PASSCODE is shorter than ${MIN_PASSCODE_LENGTH} characters, so passcode login is disabled` });
+  } else if (!mailSet && pass === "unset") {
+    checks.push({ name: "auth: login methods", status: "fail", message: "no way to sign in: set APPS_SCRIPT_URL + APPS_SCRIPT_SECRET (email link) and/or LOGIN_PASSCODE" });
+  } else if (!mailSet) {
+    checks.push({ name: "auth: login methods", status: "warn", message: "passcode only: add the Apps Script mailer (APPS_SCRIPT_URL + APPS_SCRIPT_SECRET) to enable email links" });
+  } else {
+    checks.push({ name: "auth: login methods", status: "pass", message: pass === "enabled" ? "email link and passcode" : "email link" });
+  }
+
   if (present("ADMIN_USER_EMAILS")) {
     const list = env.ADMIN_USER_EMAILS!.split(",").map((e) => e.trim()).filter(Boolean);
     const bad = list.filter((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));

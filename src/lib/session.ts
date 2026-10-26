@@ -1,10 +1,11 @@
 // Stateless signed session cookie (HMAC-SHA256 via Web Crypto, so it runs in
-// both route handlers and proxy). Payload: { email, exp }.
+// both route handlers and proxy). Payload: { email, exp, via? }. Passcode sessions
+// carry via:"passcode" and an empty email.
 
 export const SESSION_COOKIE = "yf_session";
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 14; // 14 days
 
-type Session = { email: string; exp: number };
+export type Session = { email: string; exp: number; via?: "passcode" };
 
 const enc = new TextEncoder();
 
@@ -21,9 +22,9 @@ async function hmacKey(): Promise<CryptoKey> {
   ]);
 }
 
-export async function createSessionToken(email: string, now = Date.now()): Promise<string> {
+export async function createSessionToken(email: string, now = Date.now(), via?: "passcode"): Promise<string> {
   const payload = b64url(
-    enc.encode(JSON.stringify({ email: email.toLowerCase(), exp: Math.floor(now / 1000) + SESSION_TTL_SECONDS })),
+    enc.encode(JSON.stringify({ email: email.toLowerCase(), exp: Math.floor(now / 1000) + SESSION_TTL_SECONDS, ...(via ? { via } : {}) })),
   );
   const sig = await crypto.subtle.sign("HMAC", await hmacKey(), enc.encode(payload));
   return `${payload}.${b64url(sig)}`;
@@ -44,6 +45,7 @@ export async function verifySessionToken(token: string | undefined, now = Date.n
     if (!ok) return null;
     const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Session;
     if (typeof session.email !== "string" || typeof session.exp !== "number") return null;
+    if (session.via !== undefined && session.via !== "passcode") return null;
     if (session.exp * 1000 <= now) return null;
     return session;
   } catch {

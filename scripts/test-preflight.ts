@@ -47,6 +47,21 @@ const by = (cs: ReturnType<typeof checkEnvVars>, name: string) => cs.find((c) =>
   assert.equal((REQUIRED_VARS as readonly string[]).includes("DIRECT_URL"), false);
 }
 
+// ---- login methods
+{
+  const m = (o: Record<string, string | undefined>) => by(checkEnvVars(full(o), "cli"), "auth: login methods");
+  const none = { APPS_SCRIPT_URL: undefined, APPS_SCRIPT_SECRET: undefined };
+  assert.equal(m({}).status, "pass", "mail only");
+  assert.equal(m({ LOGIN_PASSCODE: "p".repeat(20) }).status, "pass", "both");
+  assert.equal(m({ ...none, LOGIN_PASSCODE: "p".repeat(20) }).status, "warn", "passcode only warns");
+  assert.equal(m({ ...none }).status, "fail", "no method");
+  assert.equal(m({ LOGIN_PASSCODE: "short" }).status, "fail", "short passcode fails even with mail");
+  assert.equal(m({ ...none, LOGIN_PASSCODE: "p".repeat(19) }).status, "fail");
+  assert.equal(by(checkEnvVars(full({ APPS_SCRIPT_SECRET: undefined }), "cli"), "env: Apps Script mailer").status, "fail", "half-configured mailer");
+  assert.equal(by(checkEnvVars(full(none), "cli"), "env: required variables").status, "pass", "mailer vars are optional");
+  assert.ok(!JSON.stringify(checkEnvVars(full({ LOGIN_PASSCODE: "SECRETPASSCODEVALUE12345" }), "cli")).includes("SECRETPASSCODEVALUE"));
+}
+
 // ---- DEV_AUTH_BYPASS
 {
   assert.equal(by(checkEnvVars(full(), "cli"), "auth: DEV_AUTH_BYPASS").status, "pass");

@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "already_running", message: "A sync is already running. Try again in a minute." }, { status: 409 });
   }
   try {
-    const { result, summary } = await runAndRecordManualSync(business, admin.email);
+    const { result, summary } = await runAndRecordManualSync(business, admin.actor);
     await releaseSyncLock(business.id, summary.ok ? undefined : "one or more sources failed");
     return NextResponse.json({ summary, result });
   } catch (e) {

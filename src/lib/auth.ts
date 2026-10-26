@@ -4,7 +4,9 @@ import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { isDevAuthBypass } from "@/lib/dev-auth";
 import { adminEmails, isAdminEmail } from "@/lib/env";
+import { isMailConfigured } from "@/lib/apps-script";
 import { sendLoginEmail } from "@/lib/email";
+import { passcodeStatus } from "@/lib/passcode";
 import {
   SESSION_COOKIE,
   SESSION_TTL_SECONDS,
@@ -29,7 +31,7 @@ export async function getBusiness() {
  */
 export async function requestMagicLink(rawEmail: string): Promise<void> {
   const email = rawEmail.trim().toLowerCase();
-  if (!email || !isAdminEmail(email)) return;
+  if (!email || !isAdminEmail(email) || !isMailConfigured()) return;
 
   const business = await getBusiness();
   const recent = await db.loginToken.count({
@@ -65,8 +67,17 @@ export async function consumeMagicLink(token: string): Promise<string | null> {
 }
 
 export async function startSession(email: string): Promise<void> {
+  await setSessionCookie(await createSessionToken(email));
+}
+
+/** Same cookie, expiry and signature as a magic-link session; attributed as "passcode", no email. */
+export async function startPasscodeSession(): Promise<void> {
+  await setSessionCookie(await createSessionToken("", Date.now(), "passcode"));
+}
+
+async function setSessionCookie(token: string): Promise<void> {
   const jar = await cookies();
-  jar.set(SESSION_COOKIE, await createSessionToken(email), {
+  jar.set(SESSION_COOKIE, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
@@ -81,12 +92,21 @@ export async function endSession(): Promise<void> {
 
 /**
  * Authoritative check for admin pages and handlers (proxy is only an optimistic
- * redirect). Re-checks the allowlist so removing an email revokes access.
+ * redirect). Re-checks the allowlist so removing an email revokes access, and
+ * rejects passcode sessions once LOGIN_PASSCODE is unset. `actor` is what to
+ * record in the audit log: the email, or "passcode".
  */
-export async function requireAdmin(): Promise<{ email: string }> {
-  if (isDevAuthBypass()) return { email: adminEmails()[0] ?? "dev@localhost" };
+export async function requireAdmin(): Promise<{ email: string | null; actor: string }> {
+  if (isDevAuthBypass()) {
+    const email = adminEmails()[0] ?? "dev@localhost";
+    return { email, actor: email };
+  }
   const jar = await cookies();
   const session = await verifySessionToken(jar.get(SESSION_COOKIE)?.value);
+  if (session?.via === "passcode") {
+    if (passcodeStatus() !== "enabled") redirect("/login");
+    return { email: null, actor: "passcode" };
+  }
   if (!session || !isAdminEmail(session.email)) redirect("/login");
-  return { email: session.email };
+  return { email: session.email, actor: session.email };
 }

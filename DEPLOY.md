@@ -15,12 +15,17 @@ Run these in order. Do not skip ahead: step 6 is the first time a real bank is t
 
 | You need | Why |
 |---|---|
-| A **Resend** API key and a **verified sender domain** for `EMAIL_FROM` | The magic-link login is the only way into production. There is no login bypass there (see below). |
+| **At least one login method**: a `LOGIN_PASSCODE` (20+ characters; works from a phone with nothing else set up) and/or the **Apps Script mailer** (step 0b) for emailed magic links | These are the only ways into production. `DEV_AUTH_BYPASS` is inert on Vercel (see below). |
+| A **Vercel project** (no custom domain needed) | The app lives at its `https://<project>.vercel.app` address. Use that address wherever the steps below say `<project>.vercel.app`. |
 | **Plaid** production credentials (client id + the **production** secret; it differs from the sandbox secret) | Real bank connection |
 | The **Plaid redirect URI registered** (step 1b) | Banks that use OAuth (many large US banks) send the user to the bank's own site and back. Plaid refuses to create the link token until the return address is registered. |
 | Your Clover API token and merchant id (same ones as dev) | Revenue sync |
 
 `DEV_AUTH_BYPASS` is inert on Vercel: it is ignored when `NODE_ENV=production` and when `VERCEL_ENV` is `production` or `preview`. Do not set it there anyway; `preflight` warns if you do.
+
+### 0b. Deploy the Apps Script mailer (on the shop's Google account)
+
+Follow [`apps-script/README.md`](apps-script/README.md): paste `Code.gs` and `appsscript.json` into a new Apps Script project, set the `APPS_SCRIPT_SECRET` (and optional `DRIVE_FOLDER_ID`) script properties, authorize once, and deploy as a Web app (**Execute as: Me**, **Who has access: Anyone**). Keep the `/exec` URL and the secret for step 1. For now the script lives on **Stephen's** Google account, with the Drive folder (`DRIVE_FOLDER_ID`) **shared to the owner**, so they can open the reports; it can be moved to the shop's account later by redeploying it there and updating `APPS_SCRIPT_URL`/`APPS_SCRIPT_SECRET`. Sign-in emails and monthly reports are sent from that Google account (about 100 emails/day on a free Gmail account).
 
 ---
 
@@ -35,17 +40,18 @@ Vercel → Project → Settings → Environment Variables → **Production**.
 | `AUTH_SECRET` | `openssl rand -base64 48` (32+ characters) |
 | `CRON_SECRET` | `openssl rand -base64 32` (16+ characters). Also guards `/api/preflight`. |
 | `ADMIN_USER_EMAILS` | Comma-separated allowlist (you and the owner) |
-| `APP_URL` | The public **https** URL, no trailing slash, e.g. `https://yummy.example.com`. Sign-in links are built from it. |
+| `APP_URL` | The public **https** URL, no trailing slash, e.g. `https://yummy-finances.vercel.app` (the project's `*.vercel.app` address; use the **production** domain, not a per-deployment preview URL). Sign-in links are built from it. |
 | `PLAID_CLIENT_ID` | Plaid Dashboard → Developers → Keys |
 | `PLAID_SECRET` | The **production** secret |
 | `PLAID_ENV` | `production` |
-| `PLAID_REDIRECT_URI` | `https://YOUR-APP/plaid/oauth`: **exactly** `APP_URL` + `/plaid/oauth`, and registered in the Plaid Dashboard (step 1b). Required in production. |
+| `PLAID_REDIRECT_URI` | `https://<project>.vercel.app/plaid/oauth`: **exactly** `APP_URL` + `/plaid/oauth`, and registered in the Plaid Dashboard (step 1b). Required in production. |
 | `ALLOW_PLAID_PRODUCTION` | `true`. Without exactly `true`, every Plaid call is refused. This is the guard that protects the Trial plan's 10 non-recyclable Items. |
 | `CLOVER_API_BASE` | `https://api.clover.com` |
 | `CLOVER_MERCHANT_ID` | Merchant id |
 | `CLOVER_API_TOKEN` | Private API token |
-| `RESEND_API_KEY` | From Resend |
-| `EMAIL_FROM` | e.g. `Yummy Finance <reports@yourdomain.com>` (domain verified in Resend) |
+| `LOGIN_PASSCODE` | Optional. A passcode of **at least 20 characters** (a long passphrase is fine). When set, `/login` shows a passcode field; 5 wrong tries per 15 minutes per IP locks that IP out. Unset = the passcode form and `/api/auth/passcode` are disabled (404). If set but shorter than 20 characters, passcode login stays off and preflight fails. |
+| `APPS_SCRIPT_URL` | Optional until you want email links. The Apps Script web app URL (ends in `/exec`), from step 0b. Set it together with the secret; when unset, the email form is hidden. |
+| `APPS_SCRIPT_SECRET` | The same shared secret you set as a script property in step 0b (at least 16 characters) |
 | `BUSINESS_TIMEZONE` | `America/Denver` (must equal Clover's `properties.timezone` and the Business row; preflight checks all three) |
 
 ### 1b. Register the OAuth return address with Plaid
@@ -53,7 +59,7 @@ Vercel → Project → Settings → Environment Variables → **Production**.
 Plaid only issues a link token for a redirect URI that is registered, so do this **before** the preflight:
 
 1. Plaid Dashboard → **Developers → API → Allowed redirect URIs → Configure**.
-2. Add `https://YOUR-APP/plaid/oauth` (https is required in production; it must match `PLAID_REDIRECT_URI` character for character).
+2. Add `https://<project>.vercel.app/plaid/oauth` (https is required in production; it must match `PLAID_REDIRECT_URI` character for character).
 3. For local sandbox testing you may also add `http://localhost:3000/plaid/oauth` (Plaid allows http://localhost in the sandbox only) and set it as `PLAID_REDIRECT_URI` in your dev `.env`.
 
 The preflight proves the registration: it asks Plaid for a link token with the URI and fails with "not registered" if Plaid refuses.
@@ -113,11 +119,11 @@ The preflight runs **inside** Vercel's production environment, so production sec
 
 ```bash
 read -rs CRON_SECRET            # paste the production CRON_SECRET
-curl -s -H "Authorization: Bearer $CRON_SECRET" https://YOUR-APP/api/preflight | jq
+curl -s -H "Authorization: Bearer $CRON_SECRET" https://<project>.vercel.app/api/preflight | jq
 unset CRON_SECRET
 ```
 
-You want `"ok": true` and no `FAIL`. It checks, by name and outcome only (never values): required variables, secret lengths, `APP_URL` is public https, Plaid production guard, `DEV_AUTH_BYPASS` off, Node version, `ENCRYPTION_KEY` decodes to 32 bytes, database reachable, one Business row, no pending migrations, stored bank tokens decryptable, Clover token reaches `/merchants/{mId}` and its timezone matches `BUSINESS_TIMEZONE`, the Plaid client builds for `production`, `PLAID_REDIRECT_URI` equals `APP_URL` + `/plaid/oauth` **and is registered with Plaid**, and the Resend key (and sender domain) is valid.
+You want `"ok": true` and no `FAIL`. It checks, by name and outcome only (never values): required variables, secret lengths, `APP_URL` is public https, Plaid production guard, `DEV_AUTH_BYPASS` off, Node version, `ENCRYPTION_KEY` decodes to 32 bytes, database reachable, one Business row, no pending migrations, stored bank tokens decryptable, Clover token reaches `/merchants/{mId}` and its timezone matches `BUSINESS_TIMEZONE`, the Plaid client builds for `production`, `PLAID_REDIRECT_URI` equals `APP_URL` + `/plaid/oauth` **and is registered with Plaid**, and the Apps Script mailer (when configured) answers a `ping` with the shared secret, and at least one login method is configured (preflight **warns** if only the passcode is).
 
 Fix every `FAIL` before going on. A **"redirect URI registered"** failure means step 1b is not done. A `WARN` is worth reading.
 
@@ -125,7 +131,15 @@ Fix every `FAIL` before going on. A **"redirect URI registered"** failure means 
 
 ## 6. Log in
 
-Open `https://YOUR-APP/login`, enter an address from `ADMIN_USER_EMAILS`, open the emailed link (valid 15 minutes, single use), click **Sign in**. There is no bypass on Vercel; if the email does not arrive, fix Resend (`preflight` tells you why).
+Open `https://<project>.vercel.app/login`, enter an address from `ADMIN_USER_EMAILS`, open the emailed link (valid 15 minutes, single use), click **Sign in**. There is no bypass on Vercel; if the email does not arrive, fix the Apps Script mailer (`preflight` tells you why; remember a script edit only goes live after **Manage deployments → New version**).
+
+### Phone-only flow (no mailer yet)
+
+1. In Vercel, set `LOGIN_PASSCODE` (20+ characters) and redeploy.
+2. Open `https://<project>.vercel.app/login`, enter the passcode, tap **Sign in with passcode**. The session lasts the same 14 days as an email-link session; the audit log records it as `passcode`.
+3. Later: deploy the Apps Script (step 0b), add `APPS_SCRIPT_URL` and `APPS_SCRIPT_SECRET` in Vercel, redeploy, and the email form appears. Then optionally **remove `LOGIN_PASSCODE`** and redeploy: the passcode form and route turn off and any existing passcode sessions stop working.
+
+Rotating `LOGIN_PASSCODE` does not sign out an existing passcode session (it is valid for 14 days); to force everyone out, change `AUTH_SECRET`.
 
 ## 7. Connect the bank (this uses a real, non-recyclable Plaid Item)
 
