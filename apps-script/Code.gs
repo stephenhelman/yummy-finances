@@ -73,13 +73,14 @@ function handleLoginEmail_(req) {
     '<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#222">' +
     '<h2 style="margin:0 0 16px;color:#b3265f">' + BRAND + '</h2>' +
     '<p>Click the button to sign in. The link works once and expires in ' + mins + ' minutes.</p>' +
+    '<p><b>Open it in your phone\'s main browser (Safari on iPhone, Chrome on Android)</b>, not inside the Mail or Gmail app, so you stay signed in.</p>' +
     '<p style="margin:24px 0"><a href="' + esc_(req.link) + '" style="background:#b3265f;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none">Sign in</a></p>' +
     '<p style="font-size:12px;color:#777">If you did not ask for this, ignore this email.</p></div>';
   MailApp.sendEmail({
     to: req.to,
     subject: 'Your ' + BRAND + ' sign-in link',
     htmlBody: html,
-    body: 'Sign in to ' + BRAND + ' (single use, expires in ' + mins + ' minutes): ' + req.link,
+    body: 'Sign in to ' + BRAND + ' (single use, expires in ' + mins + ' minutes). Open the link in your phone\'s main browser (Safari or Chrome), not inside the Mail app, so you stay signed in: ' + req.link,
     name: BRAND,
   });
   return { ok: true };

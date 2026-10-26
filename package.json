@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "postinstall": "prisma generate",
     "db:seed": "prisma db seed",
+    "test:passcode-db": "tsx scripts/test-passcode-db.ts",
     "test:apps-script": "tsx scripts/test-apps-script.ts",
     "test:passcode": "tsx scripts/test-passcode.ts",
     "test:crypto": "tsx scripts/test-crypto.ts",

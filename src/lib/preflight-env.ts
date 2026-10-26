@@ -46,6 +46,11 @@ export function isDeployed(env: Env, context: "cli" | "server"): boolean {
   return env.VERCEL_ENV === "production" || env.VERCEL_ENV === "preview" || (context === "server" && env.NODE_ENV === "production");
 }
 
+/** True on a Vercel production deploy or any production build. */
+export function isProduction(env: Env): boolean {
+  return env.VERCEL_ENV === "production" || env.NODE_ENV === "production";
+}
+
 export function checkEnvVars(env: Env, context: "cli" | "server"): Check[] {
   const checks: Check[] = [];
   const present = (n: string) => !!env[n]?.trim();
@@ -79,8 +84,15 @@ export function checkEnvVars(env: Env, context: "cli" | "server"): Check[] {
   // Login methods: at least one must work. Both mailer variables are needed for email sign-in.
   const mailSet = present("APPS_SCRIPT_URL") && present("APPS_SCRIPT_SECRET");
   const pass = passcodeStatus(env);
-  if (present("APPS_SCRIPT_URL") !== present("APPS_SCRIPT_SECRET")) {
+  if (isProduction(env) && !mailSet) {
+    // Production always needs the mailer, whatever else is configured: the passcode is an emergency fallback only.
+    const missingMail = ["APPS_SCRIPT_URL", "APPS_SCRIPT_SECRET"].filter((n) => !present(n));
+    checks.push({ name: "env: Apps Script mailer", status: "fail", message: `required in production, missing: ${missingMail.join(", ")}` });
+  } else if (present("APPS_SCRIPT_URL") !== present("APPS_SCRIPT_SECRET")) {
     checks.push({ name: "env: Apps Script mailer", status: "fail", message: "APPS_SCRIPT_URL and APPS_SCRIPT_SECRET must be set together" });
+  }
+  if (isProduction(env) && pass === "enabled") {
+    checks.push({ name: "auth: LOGIN_PASSCODE", status: "warn", message: "passcode login is ENABLED in production; it is an emergency fallback, remove LOGIN_PASSCODE once the mailer works" });
   }
   if (pass === "too_short") {
     checks.push({ name: "auth: login methods", status: "fail", message: `LOGIN_PASSCODE is shorter than ${MIN_PASSCODE_LENGTH} characters, so passcode login is disabled` });

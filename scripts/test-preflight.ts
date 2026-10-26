@@ -62,6 +62,22 @@ const by = (cs: ReturnType<typeof checkEnvVars>, name: string) => cs.find((c) =>
   assert.ok(!JSON.stringify(checkEnvVars(full({ LOGIN_PASSCODE: "SECRETPASSCODEVALUE12345" }), "cli")).includes("SECRETPASSCODEVALUE"));
 }
 
+// ---- production requires the mailer regardless of the passcode
+{
+  const pc = "p".repeat(20), none = { APPS_SCRIPT_URL: undefined, APPS_SCRIPT_SECRET: undefined };
+  for (const prod of [{ VERCEL_ENV: "production" }, { NODE_ENV: "production" }]) {
+    const c = by(checkEnvVars(full({ ...prod, ...none, LOGIN_PASSCODE: pc }), "server"), "env: Apps Script mailer");
+    assert.equal(c.status, "fail");
+    assert.match(c.message, /APPS_SCRIPT_URL, APPS_SCRIPT_SECRET/);
+    assert.equal(by(checkEnvVars(full({ ...prod, APPS_SCRIPT_SECRET: undefined }), "server"), "env: Apps Script mailer").status, "fail");
+    assert.ok(!checkEnvVars(full(prod), "server").some((x) => x.name === "env: Apps Script mailer" && x.status === "fail"), "configured mailer passes");
+    assert.equal(by(checkEnvVars(full({ ...prod, LOGIN_PASSCODE: pc }), "server"), "auth: LOGIN_PASSCODE").status, "warn");
+  }
+  // outside production the passcode alone is still acceptable
+  assert.ok(!checkEnvVars(full({ ...none, LOGIN_PASSCODE: pc }), "cli").some((x) => x.name === "env: Apps Script mailer"));
+  assert.equal(by(checkEnvVars(full({ ...none, LOGIN_PASSCODE: pc }), "cli"), "auth: login methods").status, "warn");
+}
+
 // ---- DEV_AUTH_BYPASS
 {
   assert.equal(by(checkEnvVars(full(), "cli"), "auth: DEV_AUTH_BYPASS").status, "pass");

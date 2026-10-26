@@ -1,12 +1,12 @@
 # Yummy Finances mailer (Google Apps Script)
 
-This small script sends the sign-in emails and the monthly P&L report. It runs on the **shop's Google account**, so there is no email service to pay for and no domain to verify. You do this once.
+This small script sends the sign-in emails and the monthly P&L report. It runs on **Stephen's Google account**, so there is no email service to pay for and no domain to verify. The script, the report workbooks and the Drive folder all live on that account, and the folder is **shared with the owner** (step 2). You do this once.
 
 Limits to know: a normal Gmail account can send about **100 emails a day** through Apps Script (a Workspace account about 1,500). Login links and one monthly report are far below that.
 
 ## 1. Create the script
 
-1. Signed in as the shop's Google account, go to <https://script.google.com> and click **New project**. Name it `Yummy Finances Mailer`.
+1. Signed in as Stephen's Google account, go to <https://script.google.com> and click **New project**. Name it `Yummy Finances Mailer`.
 2. Delete the sample code in `Code.gs` and paste in the whole of `apps-script/Code.gs` from this repo.
 3. Click the gear (**Project Settings**) and tick **Show "appsscript.json" manifest file in editor**. Go back to the editor, open `appsscript.json`, and paste in the contents of `apps-script/appsscript.json` from this repo. Save.
 
@@ -17,7 +17,7 @@ In **Project Settings → Script properties → Add script property**:
 | Property | Value |
 |---|---|
 | `APPS_SCRIPT_SECRET` | A long random string, at least 16 characters (for example, run `openssl rand -base64 32`). You will paste the *same* value into Vercel. |
-| `DRIVE_FOLDER_ID` | Optional. Open the Drive folder for the reports; the id is the last part of its URL (`drive.google.com/drive/folders/THIS_PART`). Leave it out to use My Drive. |
+| `DRIVE_FOLDER_ID` | Optional. Open the Drive folder for the reports; the id is the last part of its URL (`drive.google.com/drive/folders/THIS_PART`). Leave it out to use My Drive. Create the folder on Stephen's account and **share it with the owner** (Share → add their email as Viewer or Editor), so they can open the yearly workbooks. |
 
 ## 3. Authorize it once
 
