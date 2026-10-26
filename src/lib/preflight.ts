@@ -1,6 +1,6 @@
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { Resend } from "resend";
+import { callAppsScript } from "@/lib/apps-script";
 import { CloverClient } from "@/lib/clover/client";
 import { decrypt, encrypt } from "@/lib/crypto";
 import { db } from "@/lib/db";
@@ -111,9 +111,14 @@ export async function runPreflight(opts: { context: "cli" | "server"; env?: Node
     );
   }
 
-  // Resend
-  if (has("RESEND_API_KEY")) {
-    out.push(...(await attempt("resend: key", env, async () => resendCheck(env))));
+  // Apps Script mailer
+  if (has("APPS_SCRIPT_URL") && has("APPS_SCRIPT_SECRET")) {
+    out.push(
+      ...(await attempt("apps script: ping", env, async () => {
+        await callAppsScript({ type: "ping" }, { env, timeoutMs: 20_000 });
+        return { name: "apps script: ping", status: "pass", message: "web app reachable and accepted the secret" };
+      })),
+    );
   }
 
   return out;
@@ -153,24 +158,4 @@ async function plaidItemsCheck(env: NodeJS.ProcessEnv): Promise<Check> {
   const bits = [`${mine.length} for ${current || "?"} (decryptable${mine.some((i) => i.status !== "OK") ? ", but not all healthy: see /admin/connect-bank" : ", status ok"})`];
   if (foreign) bits.push(`${foreign} belong to another Plaid environment and are ignored`);
   return { name: "plaid: stored items", status: "pass", message: bits.join("; ") };
-}
-
-async function resendCheck(env: NodeJS.ProcessEnv): Promise<Check> {
-  const resend = new Resend(env.RESEND_API_KEY);
-  const { data, error } = await resend.domains.list();
-  if (error) {
-    // A send-only key can't list domains: that still proves the key is valid.
-    if (/restricted/i.test(error.name ?? "") || /restricted/i.test(error.message ?? "")) {
-      return { name: "resend: key", status: "pass", message: "valid (sending-only key; sender domain not verifiable here)" };
-    }
-    return { name: "resend: key", status: "fail", message: `rejected: ${error.name ?? "error"}` };
-  }
-  const fromDomain = (env.EMAIL_FROM ?? "").match(/@([^>\s]+)/)?.[1]?.toLowerCase();
-  const domains = data?.data ?? [];
-  const match = domains.find((d) => d.name.toLowerCase() === fromDomain);
-  if (!fromDomain) return { name: "resend: key", status: "warn", message: "valid, but EMAIL_FROM has no domain to check" };
-  if (!match) return { name: "resend: key", status: "fail", message: `valid key, but ${fromDomain} is not a domain on this Resend account` };
-  return match.status === "verified"
-    ? { name: "resend: key", status: "pass", message: `valid; sender domain ${fromDomain} verified` }
-    : { name: "resend: key", status: "fail", message: `valid key, but sender domain ${fromDomain} is ${match.status}, not verified` };
 }

@@ -1,27 +1,9 @@
-import { Resend } from "resend";
-import { requireEnv } from "@/lib/env";
+import { callAppsScript, type AppsScriptOptions } from "@/lib/apps-script";
 
-export type OutgoingEmail = {
-  to: string | string[];
-  cc?: string | string[];
-  subject: string;
-  html: string;
-  text?: string;
-  attachments?: { filename: string; content: Buffer }[];
-};
-
-/** Sends via Resend and returns the message id. Throws on API error. */
-export async function sendEmail(msg: OutgoingEmail): Promise<string> {
-  const resend = new Resend(requireEnv("RESEND_API_KEY"));
-  const { data, error } = await resend.emails.send({
-    from: requireEnv("EMAIL_FROM"),
-    to: msg.to,
-    cc: msg.cc,
-    subject: msg.subject,
-    html: msg.html,
-    text: msg.text,
-    attachments: msg.attachments,
-  });
-  if (error || !data) throw new Error(`Resend error: ${error?.message ?? "no data"}`);
-  return data.id;
+/** Sends the magic-link sign-in email through the Apps Script mailer. Throws on failure. */
+export async function sendLoginEmail(
+  args: { to: string; link: string; expiresMinutes: number },
+  opts?: AppsScriptOptions,
+): Promise<void> {
+  await callAppsScript({ type: "login_email", ...args }, opts);
 }

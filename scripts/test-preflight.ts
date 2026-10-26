@@ -9,7 +9,7 @@ const full = (o: Record<string, string | undefined> = {}) => ({
   DATABASE_URL: "postgresql://u:SUPERSECRETDB@host/db", DIRECT_URL: "postgresql://u:SUPERSECRETDIRECT@host/db", ENCRYPTION_KEY: key(),
   AUTH_SECRET: "a".repeat(40), ADMIN_USER_EMAILS: "me@x.com, you@x.com", APP_URL: "https://app.example.com", CRON_SECRET: "c".repeat(24),
   PLAID_CLIENT_ID: "cid", PLAID_SECRET: "PLAIDSECRETVALUE", PLAID_ENV: "sandbox", CLOVER_MERCHANT_ID: "M1", CLOVER_API_TOKEN: "CLOVERTOKENVALUE",
-  RESEND_API_KEY: "re_RESENDKEYVALUE", EMAIL_FROM: "P&L <pl@example.com>", BUSINESS_TIMEZONE: "America/Denver", OWNER_EMAIL: "o@x.com", ...o,
+  APPS_SCRIPT_URL: "https://script.google.com/macros/s/AKfycbxDEPLOYMENTID/exec", APPS_SCRIPT_SECRET: "APPSSCRIPTSECRETVALUE", BUSINESS_TIMEZONE: "America/Denver", OWNER_EMAIL: "o@x.com", ...o,
 });
 const by = (cs: ReturnType<typeof checkEnvVars>, name: string) => cs.find((c) => c.name === name)!;
 
@@ -28,12 +28,12 @@ const by = (cs: ReturnType<typeof checkEnvVars>, name: string) => cs.find((c) =>
 {
   const ok = checkEnvVars(full(), "cli");
   assert.equal(by(ok, "env: required variables").status, "pass");
-  const miss = checkEnvVars(full({ CLOVER_API_TOKEN: undefined, DIRECT_URL: "", RESEND_API_KEY: "  " }), "cli");
+  const miss = checkEnvVars(full({ CLOVER_API_TOKEN: undefined, DIRECT_URL: "", AUTH_SECRET: "  " }), "cli");
   const c = by(miss, "env: required variables");
   assert.equal(c.status, "fail");
   assert.match(c.message, /CLOVER_API_TOKEN/);
   assert.match(c.message, /DIRECT_URL/);
-  assert.match(c.message, /RESEND_API_KEY/);
+  assert.match(c.message, /AUTH_SECRET/);
   // no value from the environment appears in any message
   const all = JSON.stringify(checkEnvVars(full(), "cli"));
   for (const v of Object.values(full())) if (v && v.length > 8 && !["sandbox"].includes(v)) assert.ok(!all.includes(v), "value leaked");

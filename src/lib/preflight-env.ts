@@ -19,8 +19,8 @@ export const REQUIRED_VARS = [
   "PLAID_ENV",
   "CLOVER_MERCHANT_ID",
   "CLOVER_API_TOKEN",
-  "RESEND_API_KEY",
-  "EMAIL_FROM",
+  "APPS_SCRIPT_URL",
+  "APPS_SCRIPT_SECRET",
   "BUSINESS_TIMEZONE", // preflight cross-checks it against Clover and the Business row
 ] as const;
 
@@ -30,7 +30,7 @@ export const CLI_ONLY_VARS = ["DIRECT_URL", "OWNER_EMAIL"] as const;
 /** Values that must never appear in output or error text. */
 export const SECRET_VARS = [
   "DATABASE_URL", "DIRECT_URL", "ENCRYPTION_KEY", "AUTH_SECRET", "CRON_SECRET",
-  "PLAID_SECRET", "CLOVER_API_TOKEN", "RESEND_API_KEY",
+  "PLAID_SECRET", "CLOVER_API_TOKEN", "APPS_SCRIPT_URL", "APPS_SCRIPT_SECRET",
 ] as const;
 
 /** Replaces any secret value found in text. Defense in depth for error messages from libraries. */
@@ -68,6 +68,14 @@ export function checkEnvVars(env: Env, context: "cli" | "server"): Check[] {
   if (present("CRON_SECRET")) {
     const ok = env.CRON_SECRET!.length >= 16;
     checks.push({ name: "env: CRON_SECRET length", status: ok ? "pass" : "fail", message: ok ? "at least 16 characters" : "must be at least 16 characters" });
+  }
+  if (present("APPS_SCRIPT_SECRET")) {
+    const ok = env.APPS_SCRIPT_SECRET!.length >= 16;
+    checks.push({ name: "env: APPS_SCRIPT_SECRET length", status: ok ? "pass" : "fail", message: ok ? "at least 16 characters" : "must be at least 16 characters" });
+  }
+  if (present("APPS_SCRIPT_URL")) {
+    const ok = /^https:\/\/script\.google\.com\/macros\/s\/[^/\s]+\/exec$/.test(env.APPS_SCRIPT_URL!.trim());
+    checks.push({ name: "env: APPS_SCRIPT_URL", status: ok ? "pass" : "fail", message: ok ? "looks like a deployed web app (/exec)" : "must be the Apps Script web app URL: https://script.google.com/macros/s/.../exec" });
   }
   if (present("ADMIN_USER_EMAILS")) {
     const list = env.ADMIN_USER_EMAILS!.split(",").map((e) => e.trim()).filter(Boolean);

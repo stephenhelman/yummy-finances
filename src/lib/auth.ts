@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { isDevAuthBypass } from "@/lib/dev-auth";
 import { adminEmails, isAdminEmail } from "@/lib/env";
-import { sendEmail } from "@/lib/email";
+import { sendLoginEmail } from "@/lib/email";
 import {
   SESSION_COOKIE,
   SESSION_TTL_SECONDS,
@@ -49,12 +49,7 @@ export async function requestMagicLink(rawEmail: string): Promise<void> {
 
   const base = process.env.APP_URL ?? "http://localhost:3000";
   const link = `${base}/auth/verify?token=${token}`;
-  await sendEmail({
-    to: email,
-    subject: "Your sign-in link",
-    html: `<p>Click to sign in (valid 15 minutes, single use):</p><p><a href="${link}">Sign in</a></p>`,
-    text: `Sign in (valid 15 minutes, single use): ${link}`,
-  });
+  await sendLoginEmail({ to: email, link, expiresMinutes: TOKEN_TTL_MS / 60_000 });
 }
 
 /** Atomically consumes a token. Returns the email on success, else null. */
