@@ -3,8 +3,9 @@ import { db } from "@/lib/db";
 import { syncCloverMonth, type CloverSyncReport } from "@/lib/clover/sync";
 import { currentMonth } from "@/lib/dates";
 import { formatDateTime } from "@/lib/format";
-import { getPlaid, plaidErrorSummary } from "@/lib/plaid";
-import { syncPlaidItem, type ItemSyncResult } from "@/lib/plaid/sync";
+import { getPlaid, itemsFor, plaidErrorSummary } from "@/lib/plaid";
+import { syncPlaidItem } from "@/lib/plaid/sync";
+import { syncBanks, type BankSyncResult } from "@/lib/plaid/sync-all";
 import { summarizeSync, type SyncSummary } from "@/lib/sync-summary";
 
 const JOB = "sync-now";
@@ -33,18 +34,18 @@ export async function releaseSyncLock(businessId: string, error?: string): Promi
 }
 
 export type ManualSyncResult = {
-  plaid: { ok: true; result: ItemSyncResult | { outcome: "no_bank_connected" } } | { ok: false; error: string };
+  plaid: { ok: true; banks: BankSyncResult[] } | { ok: false; error: string }; // banks is empty when none is connected
   clover: { ok: true; report: CloverSyncReport } | { ok: false; error: string };
 };
 
-/** Plaid transactions, then Clover for the current month plus its two-month lookback. Failures are independent. */
+/** Plaid transactions for every connected bank, then Clover for the current month plus its two-month lookback. Failures are independent. */
 export async function runManualSync(business: { id: string; timezone: string }): Promise<ManualSyncResult> {
   const out: ManualSyncResult = { plaid: { ok: false, error: "not run" }, clover: { ok: false, error: "not run" } };
 
   try {
     const { env } = getPlaid();
-    const item = await db.plaidItem.findUnique({ where: { businessId_environment: { businessId: business.id, environment: env } } });
-    out.plaid = { ok: true, result: item ? await syncPlaidItem(item.id) : { outcome: "no_bank_connected" } };
+    const items = await itemsFor(business.id, env);
+    out.plaid = { ok: true, banks: await syncBanks(items, (id) => syncPlaidItem(id), plaidErrorSummary) };
   } catch (e) {
     out.plaid = { ok: false, error: plaidErrorSummary(e) }; // message only: never the SDK error object
   }

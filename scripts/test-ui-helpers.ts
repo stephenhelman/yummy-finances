@@ -26,7 +26,11 @@ const month = (m: string, created = 0, updated = 0, refundsCreated = 0) => ({
   startUtc: "", endUtc: "", monthLocked: false,
 });
 const clover = (months: ReturnType<typeof month>[]) => ({ ok: true as const, report: { month: months.at(-1)!.month, timezone: "America/Denver", tenders: 13, months, refundsLinked: 0, refundsUnlinked: 0 } });
-const synced = (c: Partial<typeof counts>) => ({ ok: true as const, result: { outcome: "synced" as const, itemStatus: "OK", status: "synced" as const, counts: { ...counts, ...c }, pages: 1, restarts: 0, nextCursor: "x" } });
+type BankResult = Extract<ManualSyncResult["plaid"], { ok: true }>["banks"][number]["result"];
+const bank = (result: BankResult, institution: string | null = "First Platypus Bank", itemId = "i1") => ({ itemId, institution, result });
+const banks = (...b: ReturnType<typeof bank>[]) => ({ ok: true as const, banks: b });
+const syncedResult = (c: Partial<typeof counts>): BankResult => ({ outcome: "synced", itemStatus: "OK", status: "synced", counts: { ...counts, ...c }, pages: 1, restarts: 0, nextCursor: "x" });
+const synced = (c: Partial<typeof counts>) => banks(bank(syncedResult(c)));
 const sum = (r: ManualSyncResult) => summarizeSync(r, at, "Oct 24, 10:36 AM");
 
 {
@@ -39,23 +43,37 @@ const sum = (r: ManualSyncResult) => summarizeSync(r, at, "Oct 24, 10:36 AM");
   assert.equal(busy.lines[0], "Bank: 12 new, 2 changed, 1 removed. 1 landed in a month that was already closed. 1 need a look.");
   assert.equal(busy.lines[1], "Clover: 40 new payments, 3 changed, 2 new refunds (September to October checked).");
 
-  const noBank = sum({ plaid: { ok: true, result: { outcome: "no_bank_connected" } }, clover: clover([month("2026-10")]) });
+  const noBank = sum({ plaid: banks(), clover: clover([month("2026-10")]) });
   assert.equal(noBank.ok, true, "no bank yet is not a failure");
   assert.equal(noBank.lines[0], "Bank: not connected yet.");
   assert.equal(noBank.lines[1], "Clover: up to date (October checked).");
 
-  const skipped = sum({ plaid: { ok: true, result: { outcome: "skipped", itemStatus: "LOGIN_REQUIRED", errorCode: "ITEM_LOGIN_REQUIRED" } }, clover: clover([month("2026-10")]) });
+  const skipped = sum({ plaid: banks(bank({ outcome: "skipped", itemStatus: "LOGIN_REQUIRED", errorCode: "ITEM_LOGIN_REQUIRED" })), clover: clover([month("2026-10")]) });
   assert.equal(skipped.ok, false);
   assert.equal(skipped.plaidOk, false);
   assert.equal(skipped.cloverOk, true);
   assert.match(skipped.lines[0], /^Bank: skipped\. .*Connections/);
 
-  const withMessage = sum({ plaid: { ok: true, result: { outcome: "skipped", itemStatus: "UNUSABLE", errorCode: "KEY_MISMATCH", message: "Cannot decrypt." } }, clover: clover([month("2026-10")]) });
+  const withMessage = sum({ plaid: banks(bank({ outcome: "skipped", itemStatus: "UNUSABLE", errorCode: "KEY_MISMATCH", message: "Cannot decrypt." })), clover: clover([month("2026-10")]) });
   assert.equal(withMessage.lines[0], "Bank: skipped. Cannot decrypt.");
 
-  const notReady = sum({ plaid: { ok: true, result: { outcome: "not_ready", itemStatus: "OK" } }, clover: clover([month("2026-10")]) });
+  const notReady = sum({ plaid: banks(bank({ outcome: "not_ready", itemStatus: "OK" })), clover: clover([month("2026-10")]) });
   assert.match(notReady.lines[0], /still preparing/);
   assert.equal(notReady.ok, true);
+
+  // several banks: lines name the bank, one needing attention doesn't hide the other
+  const mixed = sum({
+    plaid: banks(
+      bank({ outcome: "skipped", itemStatus: "LOGIN_REQUIRED", errorCode: "ITEM_LOGIN_REQUIRED" }, "Chase", "i1"),
+      bank(syncedResult({ created: 3 }), "Wells Fargo", "i2"),
+      bank({ outcome: "failed", error: "boom" }, null, "i3"),
+    ),
+    clover: clover([month("2026-10")]),
+  });
+  assert.equal(mixed.plaidOk, false);
+  assert.match(mixed.lines[0], /^Bank \(Chase\): skipped\./);
+  assert.equal(mixed.lines[1], "Bank (Wells Fargo): 3 new, 0 changed, 0 removed.");
+  assert.equal(mixed.lines[2], "Bank (#3): couldn't sync. boom");
 
   const failed = sum({ plaid: { ok: false, error: "ITEM_ERROR/X: bad" }, clover: { ok: false, error: "Clover timezone mismatch" } });
   assert.equal(failed.ok, false);

@@ -7,7 +7,7 @@ import { Products } from "plaid";
 import { db } from "../src/lib/db";
 import { decrypt } from "../src/lib/crypto";
 import { PLAID_DAYS_REQUESTED } from "../src/lib/plaid-config";
-import { checkItemHealth, completeReconnect, connectItem, createLinkToken, createUpdateLinkToken, getPlaid, plaidErrorSummary, refreshAccounts, PlaidAlreadyConnectedError } from "../src/lib/plaid";
+import { checkItemHealth, completeReconnect, connectItem, abandonLink, createLinkToken, createUpdateLinkToken, getPlaid, plaidErrorSummary, refreshAccounts } from "../src/lib/plaid";
 import { removeSandbox } from "./plaid-sandbox-remove";
 
 async function main() {
@@ -67,13 +67,15 @@ async function main() {
     console.log(`after reset_login: status=${row.status} lastErrorCode=${row.lastErrorCode}`);
 
     // --- update-mode token works server-side; normal connect token still refused
-    const upd = await createUpdateLinkToken(business.id);
+    const upd = await createUpdateLinkToken(business.id, item.id);
     assert.ok(upd.startsWith("link-sandbox-"));
     console.log("update-mode link_token created");
-    await assert.rejects(createLinkToken(business.id), PlaidAlreadyConnectedError);
+    // several banks are allowed, so a connect token is still issued (duplicates are refused at exchange)
+    assert.ok((await createLinkToken(business.id)).startsWith("link-sandbox-"));
+    await abandonLink(business.id);
 
     // --- completeReconnect is honest: Link not completed, so Plaid still says login required
-    const re = await completeReconnect(business.id);
+    const re = await completeReconnect(business.id, item.id);
     assert.equal(re.status, "LOGIN_REQUIRED", "status is not assumed OK");
     console.log(`completeReconnect without a real Link session -> ${re.status} (not blindly OK)`);
   } finally {

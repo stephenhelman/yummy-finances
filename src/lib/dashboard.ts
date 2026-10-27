@@ -3,17 +3,24 @@ import { currentMonth, previousMonth } from "@/lib/dates";
 import { db } from "@/lib/db";
 import { PlaidItemUnusableError, unlockItemToken } from "@/lib/plaid-item";
 import { resolvePlaidEnv } from "@/lib/plaid-config";
+import type { ItemStatus } from "@/lib/plaid-health";
 import { loadMonthRevenue } from "@/lib/revenue-db";
 import type { RevenueResult } from "@/lib/revenue";
 import { getLastSyncSummary } from "@/lib/sync-now";
 
 type Business = { id: string; timezone: string };
 
+export type BankSummary =
+  | { kind: "unusable"; itemId: string; institution: string | null; message: string }
+  | { kind: "connected"; itemId: string; institution: string | null; status: ItemStatus; lastSyncAt: Date | null; errorCode: string | null };
+
 export type BankCardState =
   | { kind: "config_error"; message: string }
   | { kind: "none" }
-  | { kind: "unusable"; institution: string | null; message: string }
-  | { kind: "connected"; institution: string | null; status: "OK" | "LOGIN_REQUIRED" | "PENDING_EXPIRATION" | "ERROR"; lastSyncAt: Date | null; errorCode: string | null };
+  | { kind: "banks"; banks: BankSummary[] };
+
+/** Anything but a healthy bank: needs a reconnect, has a bank-side problem, or can't be used here. */
+export const bankNeedsAttention = (b: BankSummary) => b.kind === "unusable" || b.status !== "OK";
 
 export async function loadBankCard(business: Business): Promise<BankCardState> {
   let env: string;
@@ -22,15 +29,18 @@ export async function loadBankCard(business: Business): Promise<BankCardState> {
   } catch (e) {
     return { kind: "config_error", message: (e as Error).message };
   }
-  const item = await db.plaidItem.findUnique({ where: { businessId_environment: { businessId: business.id, environment: env } } });
-  if (!item) return { kind: "none" };
-  try {
-    unlockItemToken(item, env);
-  } catch (e) {
-    if (e instanceof PlaidItemUnusableError) return { kind: "unusable", institution: item.institutionName, message: e.message };
-    throw e;
-  }
-  return { kind: "connected", institution: item.institutionName, status: item.status, lastSyncAt: item.lastSyncAt, errorCode: item.lastErrorCode };
+  const items = await db.plaidItem.findMany({ where: { businessId: business.id, environment: env }, orderBy: { createdAt: "asc" } });
+  if (!items.length) return { kind: "none" };
+  const banks: BankSummary[] = items.map((item) => {
+    try {
+      unlockItemToken(item, env);
+    } catch (e) {
+      if (e instanceof PlaidItemUnusableError) return { kind: "unusable", itemId: item.id, institution: item.institutionName, message: e.message };
+      throw e;
+    }
+    return { kind: "connected", itemId: item.id, institution: item.institutionName, status: item.status, lastSyncAt: item.lastSyncAt, errorCode: item.lastErrorCode };
+  });
+  return { kind: "banks", banks };
 }
 
 export type CloverCheck = { ok: true; name: string } | { ok: false; message: string };

@@ -3,15 +3,17 @@ import { getBusiness, requireAdmin } from "@/lib/auth";
 import { checkItemHealth, plaidErrorSummary, getPlaid } from "@/lib/plaid";
 import { db } from "@/lib/db";
 import { PlaidItemUnusableError } from "@/lib/plaid-item";
-import { isSameOrigin } from "@/lib/request";
+import { isSameOrigin, itemIdFrom } from "@/lib/request";
 
 export async function POST(request: Request) {
   await requireAdmin();
   if (!isSameOrigin(request)) return NextResponse.json({ error: "bad_origin" }, { status: 403 });
+  const itemId = await itemIdFrom(request);
+  if (!itemId) return NextResponse.json({ error: "missing_item_id" }, { status: 400 });
   try {
     const business = await getBusiness();
     const { env } = getPlaid();
-    const item = await db.plaidItem.findUnique({ where: { businessId_environment: { businessId: business.id, environment: env } } });
+    const item = await db.plaidItem.findFirst({ where: { id: itemId, businessId: business.id, environment: env } });
     if (!item) return NextResponse.json({ error: "not_connected" }, { status: 404 });
     const health = await checkItemHealth(item.id);
     return NextResponse.json({ status: health.status, errorCode: health.errorCode });

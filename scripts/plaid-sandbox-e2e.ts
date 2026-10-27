@@ -8,7 +8,7 @@ import { Products } from "plaid";
 import { decrypt } from "../src/lib/crypto";
 import { db } from "../src/lib/db";
 import { PLAID_DAYS_REQUESTED } from "../src/lib/plaid-config";
-import { PlaidAlreadyConnectedError, connectItem, createLinkToken, getPlaid, plaidErrorSummary } from "../src/lib/plaid";
+import { PlaidConnectInProgressError, PlaidInstitutionAlreadyConnectedError, connectItem, createLinkToken, getPlaid, plaidErrorSummary } from "../src/lib/plaid";
 import { removeSandbox } from "./plaid-sandbox-remove";
 
 async function main() {
@@ -52,12 +52,24 @@ async function main() {
   console.log(`accounts stored: ${row.accounts.length}`);
   for (const a of row.accounts) console.log(`  ${a.name} ••••${a.mask} (${a.type}/${a.subtype})`);
 
-  // 5. second connection is refused (no second Item can be burned)
+  // 5. the same institution again is refused (and its new Item removed at Plaid); a second link is
+  //    refused while one is in flight; a different institution connects as a second bank
+  assert.equal(row.institutionId, "ins_109508");
   const pt2 = await client.sandboxPublicTokenCreate({ institution_id: "ins_109508", initial_products: [Products.Transactions] });
-  await assert.rejects(connectItem({ businessId: business.id, publicToken: pt2.data.public_token }), PlaidAlreadyConnectedError);
-  await assert.rejects(createLinkToken(business.id), PlaidAlreadyConnectedError);
-  console.log("second connect / second link token refused");
-  await client.itemRemove({ access_token: (await client.itemPublicTokenExchange({ public_token: pt2.data.public_token })).data.access_token });
+  await assert.rejects(connectItem({ businessId: business.id, publicToken: pt2.data.public_token }), PlaidInstitutionAlreadyConnectedError);
+  console.log("same institution refused");
+  await createLinkToken(business.id);
+  await assert.rejects(createLinkToken(business.id), PlaidConnectInProgressError);
+  console.log("second link token refused while one is in flight");
+  const pt3 = await client.sandboxPublicTokenCreate({
+    institution_id: "ins_109511", // Tartan Bank
+    initial_products: [Products.Transactions],
+    options: { override_username: "user_good", override_password: "pass_good", transactions: { days_requested: PLAID_DAYS_REQUESTED } },
+  });
+  const second = await connectItem({ businessId: business.id, publicToken: pt3.data.public_token });
+  assert.notEqual(second.id, item.id);
+  assert.equal(await db.plaidItem.count({ where: { businessId: business.id, environment: "sandbox" } }), 2);
+  console.log(`second bank connected: ${second.institutionName}`);
 
   if (keep) console.log("\n--keep: sandbox Item left in dev DB (remove with: npm run plaid:sandbox-remove)");
   else {

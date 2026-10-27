@@ -102,6 +102,7 @@ model PlaidItem {
   plaidItemId     String          @unique
   environment     String // "sandbox" | "production": a sandbox Item is never the real one
   accessTokenEnc  String // AES-256-GCM, see src/lib/crypto.ts
+  institutionId   String? // Plaid institution_id; null only on Items connected before multi-bank support
   institutionName String?
   status          PlaidItemStatus @default(OK)
   lastError       String?
@@ -114,9 +115,11 @@ model PlaidItem {
 
   accounts BankAccount[]
 
-  // One Item per business per environment: Trial-plan Items are non-recyclable, so a
-  // double submit or race must not be able to create a second one.
-  @@unique([businessId, environment])
+  // One Item per institution per business per environment (several banks are allowed).
+  // Trial-plan Items are non-recyclable, so a double submit or race must not be able to
+  // create a second Item for a bank that is already connected. Postgres treats NULLs as
+  // distinct, so legacy rows without an institutionId never collide (they are backfilled).
+  @@unique([businessId, environment, institutionId])
 }
 
 model BankAccount {

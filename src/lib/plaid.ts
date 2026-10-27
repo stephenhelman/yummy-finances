@@ -6,18 +6,22 @@ import { buildLinkTokenRequest } from "@/lib/plaid-link";
 import { parseRedirectUri, resolvePlaidEnv, type PlaidEnvName } from "@/lib/plaid-config";
 import { PlaidItemUnusableError, unlockItemToken } from "@/lib/plaid-item";
 import { classifyErrorCode, classifyItem, defaultIncluded, type ItemHealth } from "@/lib/plaid-health";
+import { claimLock, releaseLock } from "@/lib/job-lock";
+import {
+  PlaidConnectInProgressError,
+  PlaidInstitutionAlreadyConnectedError,
+  PlaidInstitutionUnknownError,
+  connectWith,
+  runExclusive,
+  type ConnectDeps,
+} from "@/lib/plaid-connect";
 
 // SECURITY: never log access tokens, public tokens or raw SDK errors. The SDK's axios errors
 // carry the request body (tokens and the client secret); use plaidErrorSummary() instead.
 
 export { PlaidItemUnusableError };
 
-export class PlaidAlreadyConnectedError extends Error {
-  constructor() {
-    super("A bank is already connected for this environment");
-    this.name = "PlaidAlreadyConnectedError";
-  }
-}
+export { PlaidConnectInProgressError, PlaidInstitutionAlreadyConnectedError, PlaidInstitutionUnknownError };
 
 /** The one place a Plaid client is built, so the production guard cannot be bypassed. */
 export function getPlaid(): { client: PlaidApi; env: PlaidEnvName } {
@@ -40,91 +44,122 @@ export function plaidErrorSummary(e: unknown): string {
   return e instanceof Error ? e.message : "unknown error";
 }
 
-async function currentItem(businessId: string, env: PlaidEnvName) {
-  return db.plaidItem.findUnique({ where: { businessId_environment: { businessId, environment: env } } });
+/** Every Item the business has in this Plaid environment, oldest first. */
+export async function itemsFor(businessId: string, env: PlaidEnvName) {
+  return db.plaidItem.findMany({ where: { businessId, environment: env }, orderBy: { createdAt: "asc" } });
 }
 
-export async function createLinkToken(businessId: string): Promise<string> {
-  const { client, env } = getPlaid();
-  // One Item per environment: don't start a Link flow that would be refused (reconnect is a later step).
-  if (await currentItem(businessId, env)) throw new PlaidAlreadyConnectedError();
-  const res = await client.linkTokenCreate(buildLinkTokenRequest({ userId: businessId, redirectUri: parseRedirectUri() }));
-  return res.data.link_token;
+const LINK_JOB = "plaid-link"; // a Link session is open (from link token to exchange or exit)
+const EXCHANGE_JOB = "plaid-exchange"; // a public token is being exchanged and stored
+const LINK_STALE = "10 minutes";
+const EXCHANGE_STALE = "2 minutes";
+
+const linkLock = (businessId: string) => ({ claim: () => claimLock(businessId, LINK_JOB, LINK_STALE), release: () => releaseLock(businessId, LINK_JOB) });
+const exchangeLock = (businessId: string) => ({ claim: () => claimLock(businessId, EXCHANGE_JOB, EXCHANGE_STALE), release: () => releaseLock(businessId, EXCHANGE_JOB) });
+
+/** Link was closed without connecting: free the slot so the next attempt isn't refused. */
+export async function abandonLink(businessId: string): Promise<void> {
+  await releaseLock(businessId, LINK_JOB);
 }
 
 /**
- * Exchanges a Link public_token, stores the encrypted access token and the accounts.
- * If we cannot persist after a successful exchange, the new Item is removed at Plaid so a
- * non-recyclable slot isn't silently orphaned.
+ * Link token for connecting a (further) bank. Refused while another link or exchange is in flight,
+ * which also stops a double click from opening two sessions. Duplicate banks can't be known until
+ * the user picks one in Link, so that check happens at exchange.
  */
-export async function connectItem(args: { businessId: string; publicToken: string }) {
-  const { businessId, publicToken } = args;
-  const { client, env } = getPlaid();
-  if (await currentItem(businessId, env)) throw new PlaidAlreadyConnectedError();
-
-  const exchange = await client.itemPublicTokenExchange({ public_token: publicToken });
-  const accessToken = exchange.data.access_token;
-  const plaidItemId = exchange.data.item_id;
-
+export async function createLinkToken(businessId: string): Promise<string> {
+  const { client } = getPlaid();
+  if (!(await linkLock(businessId).claim())) throw new PlaidConnectInProgressError();
   try {
-    const accounts = await client.accountsGet({ access_token: accessToken });
-    let institutionName: string | null = null;
-    const institutionId = accounts.data.item.institution_id;
-    if (institutionId) {
-      try {
-        const inst = await client.institutionsGetById({ institution_id: institutionId, country_codes: [CountryCode.Us] });
-        institutionName = inst.data.institution.name;
-      } catch {
-        institutionName = null; // cosmetic; don't fail the connection over it
-      }
-    }
-
-    return await db.$transaction(async (tx) => {
-      const item = await tx.plaidItem.create({
-        data: {
-          businessId,
-          plaidItemId,
-          environment: env,
-          accessTokenEnc: encrypt(accessToken),
-          institutionName,
-          status: "OK",
-        },
-      });
-      await tx.bankAccount.createMany({
-        data: accounts.data.accounts.map((a) => ({
-          businessId,
-          plaidItemId: item.id,
-          plaidAccountId: a.account_id,
-          name: a.name,
-          mask: a.mask ?? null,
-          type: a.type,
-          subtype: a.subtype ?? null,
-          included: defaultIncluded(a.type),
-        })),
-      });
-      return item;
-    });
+    const res = await client.linkTokenCreate(buildLinkTokenRequest({ userId: businessId, redirectUri: parseRedirectUri() }));
+    return res.data.link_token;
   } catch (e) {
-    try {
-      await client.itemRemove({ access_token: accessToken });
-    } catch {
-      // Log the Item id (not a secret) so the orphan can be removed by hand.
-      console.error(`Plaid: failed to persist Item ${plaidItemId} and failed to remove it; remove it manually`);
-    }
+    await linkLock(businessId).release();
     throw e;
   }
 }
 
-async function loadItem(businessId: string, env: PlaidEnvName) {
-  const item = await currentItem(businessId, env);
-  if (!item) throw new Error("No bank is connected for this environment");
+const isUniqueViolation = (e: unknown) => (e as { code?: string })?.code === "P2002" || /unique constraint/i.test((e as Error)?.message ?? "");
+
+/**
+ * Exchanges a Link public_token, stores the encrypted access token and the accounts. A bank that is
+ * already connected is refused, and an Item we can't keep is removed at Plaid so a non-recyclable
+ * slot isn't silently orphaned. `hintInstitutionId` is Link's own report of the chosen bank.
+ */
+export async function connectItem(args: { businessId: string; publicToken: string; hintInstitutionId?: string | null }) {
+  const { businessId, publicToken, hintInstitutionId } = args;
+  const { client, env } = getPlaid();
+
+  const result = await runExclusive(exchangeLock(businessId), async () => {
+    // Items from before multi-bank have no institutionId yet; learn it so they count as connected.
+    for (const legacy of (await itemsFor(businessId, env)).filter((i) => !i.institutionId)) {
+      await checkItemHealth(legacy.id).catch(() => undefined);
+    }
+
+    const deps: ConnectDeps<Awaited<ReturnType<typeof db.plaidItem.create>>> = {
+      async exchange(token) {
+        const r = await client.itemPublicTokenExchange({ public_token: token });
+        return { accessToken: r.data.access_token, plaidItemId: r.data.item_id };
+      },
+      async accounts(accessToken) {
+        const r = await client.accountsGet({ access_token: accessToken });
+        return { institutionId: r.data.item.institution_id ?? null, accounts: r.data.accounts };
+      },
+      async institutionName(institutionId) {
+        const r = await client.institutionsGetById({ institution_id: institutionId, country_codes: [CountryCode.Us] });
+        return r.data.institution.name;
+      },
+      findByInstitution: (institutionId) =>
+        db.plaidItem.findUnique({
+          where: { businessId_environment_institutionId: { businessId, environment: env, institutionId } },
+          select: { id: true, institutionName: true },
+        }),
+      async create({ plaidItemId, accessToken, institutionId, institutionName, accounts }) {
+        try {
+          return await db.$transaction(async (tx) => {
+            const item = await tx.plaidItem.create({
+              data: { businessId, plaidItemId, environment: env, accessTokenEnc: encrypt(accessToken), institutionId, institutionName, status: "OK" },
+            });
+            await tx.bankAccount.createMany({
+              data: accounts.map((a) => ({
+                businessId,
+                plaidItemId: item.id,
+                plaidAccountId: a.account_id,
+                name: a.name,
+                mask: a.mask ?? null,
+                type: a.type,
+                subtype: a.subtype ?? null,
+                included: defaultIncluded(a.type),
+              })),
+            });
+            return item;
+          });
+        } catch (e) {
+          if (isUniqueViolation(e)) throw new PlaidInstitutionAlreadyConnectedError(institutionName);
+          throw e;
+        }
+      },
+      async remove(accessToken) {
+        await client.itemRemove({ access_token: accessToken });
+      },
+    };
+    return connectWith(deps, publicToken, hintInstitutionId);
+  });
+  await abandonLink(businessId); // the Link session ended with this exchange (success or refusal)
+  return result;
+}
+
+/** One of the business's Items in this environment, or an error if the id is not theirs. */
+async function loadItem(businessId: string, env: PlaidEnvName, itemId: string) {
+  const item = await db.plaidItem.findFirst({ where: { id: itemId, businessId, environment: env } });
+  if (!item) throw new Error("That bank connection was not found for this environment");
   return item;
 }
 
-/** Link update-mode token for the existing Item (re-authentication). Same production guard. */
-export async function createUpdateLinkToken(businessId: string): Promise<string> {
+/** Link update-mode token for one existing Item (re-authentication). Same production guard. */
+export async function createUpdateLinkToken(businessId: string, itemId: string): Promise<string> {
   const { client, env } = getPlaid();
-  const item = await loadItem(businessId, env);
+  const item = await loadItem(businessId, env, itemId);
   const accessToken = unlockItemToken(item, env);
   const res = await client.linkTokenCreate(buildLinkTokenRequest({ userId: businessId, redirectUri: parseRedirectUri(), accessToken }));
   return res.data.link_token;
@@ -141,8 +176,10 @@ export async function checkItemHealth(itemId: string, now = new Date()): Promise
   const accessToken = unlockItemToken(item, env); // throws PlaidItemUnusableError for a foreign/undecryptable Item
 
   let health: ItemHealth;
+  let institutionId: string | null = null;
   try {
     const res = await client.itemGet({ access_token: accessToken });
+    institutionId = res.data.item.institution_id ?? null;
     health = classifyItem(
       { error: res.data.item.error, consentExpirationTime: res.data.item.consent_expiration_time },
       now,
@@ -155,7 +192,13 @@ export async function checkItemHealth(itemId: string, now = new Date()): Promise
 
   await db.plaidItem.update({
     where: { id: item.id },
-    data: { status: health.status, lastErrorCode: health.errorCode, lastError: health.message, lastCheckedAt: now },
+    data: {
+      status: health.status,
+      lastErrorCode: health.errorCode,
+      lastError: health.message,
+      lastCheckedAt: now,
+      ...(!item.institutionId && institutionId ? { institutionId } : {}), // learn it for Items from before multi-bank
+    },
   });
   return health;
 }
@@ -195,9 +238,9 @@ export async function refreshAccounts(itemId: string): Promise<{ created: number
  * After a Link update-mode session: re-check health (the status is whatever Plaid reports, not
  * assumed OK) and refresh accounts, respecting the user's included choices.
  */
-export async function completeReconnect(businessId: string): Promise<ItemHealth> {
+export async function completeReconnect(businessId: string, itemId: string): Promise<ItemHealth> {
   const { env } = getPlaid();
-  const item = await loadItem(businessId, env);
+  const item = await loadItem(businessId, env, itemId);
   const health = await checkItemHealth(item.id);
   if (health.status === "OK" || health.status === "PENDING_EXPIRATION") await refreshAccounts(item.id);
   return health;

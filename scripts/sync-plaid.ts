@@ -1,5 +1,5 @@
 // Usage: npm run sync:plaid
-// Syncs the current Plaid Item's transactions into the DB named by DATABASE_URL and prints a report.
+// Syncs every Plaid Item's transactions (each on its own; one failing does not stop the others) into the DB named by DATABASE_URL and prints a report.
 import "dotenv/config";
 import { db } from "../src/lib/db";
 import { getPlaid } from "../src/lib/plaid";
@@ -10,9 +10,25 @@ async function main() {
   console.log(`DB host: ${new URL(process.env.DATABASE_URL ?? "").host}`);
   const { env } = getPlaid();
   const business = await db.business.findFirstOrThrow();
-  const item = await db.plaidItem.findUnique({ where: { businessId_environment: { businessId: business.id, environment: env } } });
-  if (!item) throw new Error(`No ${env} Plaid Item is connected`);
+  const items = await db.plaidItem.findMany({ where: { businessId: business.id, environment: env }, orderBy: { createdAt: "asc" } });
+  if (!items.length) throw new Error(`No ${env} Plaid Item is connected`);
 
+  let failed = 0;
+  for (const item of items) {
+    console.log(`\n=== ${item.institutionName ?? "bank"} (${item.id}) ===`);
+    try {
+      await syncOne(business.id, item.id, env);
+    } catch (e) {
+      failed++;
+      console.error("FAILED:", (e as Error).message);
+    }
+  }
+  if (failed) process.exitCode = 1;
+}
+
+async function syncOne(businessId: string, itemId: string, env: string) {
+  const business = { id: businessId };
+  const item = { id: itemId };
   const r = await syncPlaidItem(item.id);
   const fresh = await db.plaidItem.findUniqueOrThrow({ where: { id: item.id } });
   console.log(`Item: ${fresh.institutionName ?? "bank"} (${env})  status=${r.itemStatus}${fresh.lastErrorCode ? `  error=${fresh.lastErrorCode}` : ""}`);

@@ -21,21 +21,29 @@ export function summarizeSync(result: ManualSyncResult, at: Date, atLabel: strin
   if (!p.ok) {
     plaidOk = false;
     lines.push(`Bank: couldn't sync. ${p.error}`);
+  } else if (p.banks.length === 0) {
+    lines.push("Bank: not connected yet.");
   } else {
-    const r = p.result;
-    if (r.outcome === "no_bank_connected") lines.push("Bank: not connected yet.");
-    else if (r.outcome === "skipped") {
-      plaidOk = false;
-      lines.push(`Bank: skipped. ${"message" in r && r.message ? r.message : "The bank connection needs attention. Open Connections."}`);
-    } else if (r.outcome === "not_ready") lines.push("Bank: Plaid is still preparing your transactions. Try again in a minute.");
-    else {
-      const c = r.counts;
-      const changes = c.created + c.updated + c.removed;
-      let line = changes === 0 ? "Bank: up to date." : `Bank: ${c.created} new, ${c.updated} changed, ${c.removed} removed.`;
-      if (c.late) line += ` ${c.late} landed in a month that was already closed.`;
-      if (c.audited) line += ` ${c.audited} need a look.`;
-      lines.push(line);
-    }
+    // With several banks each line names its bank, so a problem with one is clear.
+    p.banks.forEach((b, i) => {
+      const label = p.banks.length > 1 ? `Bank (${b.institution ?? `#${i + 1}`})` : "Bank";
+      const r = b.result;
+      if (r.outcome === "failed") {
+        plaidOk = false;
+        lines.push(`${label}: couldn't sync. ${r.error}`);
+      } else if (r.outcome === "skipped") {
+        plaidOk = false;
+        lines.push(`${label}: skipped. ${r.message ?? "The bank connection needs attention. Open Connections."}`);
+      } else if (r.outcome === "not_ready") lines.push(`${label}: Plaid is still preparing your transactions. Try again in a minute.`);
+      else {
+        const c = r.counts;
+        const changes = c.created + c.updated + c.removed;
+        let line = changes === 0 ? `${label}: up to date.` : `${label}: ${c.created} new, ${c.updated} changed, ${c.removed} removed.`;
+        if (c.late) line += ` ${c.late} landed in a month that was already closed.`;
+        if (c.audited) line += ` ${c.audited} need a look.`;
+        lines.push(line);
+      }
+    });
   }
 
   const c = result.clover;

@@ -153,7 +153,7 @@ On `/admin/connections` the page should say **Plaid environment: production**. T
 2. Confirm the institution, accounts and status **Connected** appear.
 3. Depository and credit accounts are marked **synced** by default; loans and investments are not. Adjust with the buttons.
 
-Only one Item per environment can exist (the app refuses a second). If connecting fails partway, the app removes the new Item at Plaid, so a slot is not silently lost.
+Several banks can be connected (**Add another bank**), but only one Item per bank per environment: connecting a bank that is already connected is refused and the new Item is removed at Plaid. Each Item uses one of the Trial plan's 10 non-recyclable slots, so add banks deliberately. Only one connection can be in progress at a time. If connecting fails partway, the app removes the new Item at Plaid, so a slot is not silently lost.
 
 > **OAuth banks.** If the owner's bank uses OAuth, Link sends him to the bank's own site to sign in, then back to `/plaid/oauth`, which re-opens Link, saves the connection and returns to Connections. This needs step 1b. Notes:
 > - Keep the same browser tab through the whole flow (the in-progress connection is kept in that tab's session storage). If he opens the return link in a different browser, the page says so and asks him to start again; nothing is saved or lost.

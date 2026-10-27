@@ -4,7 +4,7 @@
 
 const KEY = "yf_plaid_link";
 
-export type StoredLink = { token: string; mode: "connect" | "reconnect" };
+export type StoredLink = { token: string; mode: "connect" } | { token: string; mode: "reconnect"; itemId: string };
 
 export function saveLink(link: StoredLink): void {
   try {
@@ -26,8 +26,11 @@ export function readRawLink(): string | null {
 export function parseLink(raw: string | null | undefined): StoredLink | null {
   if (!raw) return null;
   try {
-    const v = JSON.parse(raw) as Partial<StoredLink>;
-    if (typeof v.token === "string" && (v.mode === "connect" || v.mode === "reconnect")) return { token: v.token, mode: v.mode };
+    const v = JSON.parse(raw) as { token?: unknown; mode?: unknown; itemId?: unknown };
+    if (typeof v.token !== "string") return null;
+    if (v.mode === "connect") return { token: v.token, mode: "connect" };
+    // A reconnect must say which bank it is for.
+    if (v.mode === "reconnect" && typeof v.itemId === "string" && v.itemId) return { token: v.token, mode: "reconnect", itemId: v.itemId };
   } catch {
     /* fall through */
   }
