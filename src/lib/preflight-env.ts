@@ -65,6 +65,19 @@ export function checkEnvVars(env: Env, context: "cli" | "server"): Check[] {
 
   const deployed = isDeployed(env, context);
 
+  // Key rotation: ENCRYPTION_KEY_PREVIOUS exists only while tokens are being moved to a new key.
+  const previous = env.ENCRYPTION_KEY_PREVIOUS?.trim();
+  if (previous) {
+    const name = "encryption: ENCRYPTION_KEY_PREVIOUS";
+    if (Buffer.from(previous, "base64").length !== 32) {
+      checks.push({ name, status: "fail", message: "must decode to 32 bytes (openssl rand -base64 32)" });
+    } else if (previous === env.ENCRYPTION_KEY) {
+      checks.push({ name, status: "warn", message: "is identical to ENCRYPTION_KEY: remove it" });
+    } else {
+      checks.push({ name, status: "warn", message: "key rotation in progress. Run /api/admin/rotate-tokens, confirm everything rotated, then remove ENCRYPTION_KEY_PREVIOUS and redeploy" });
+    }
+  }
+
   if (present("AUTH_SECRET")) {
     const ok = env.AUTH_SECRET!.length >= 32;
     checks.push({ name: "env: AUTH_SECRET length", status: ok ? "pass" : "fail", message: ok ? "at least 32 characters" : "must be at least 32 characters" });
@@ -171,4 +184,37 @@ export function checkEnvVars(env: Env, context: "cli" | "server"): Check[] {
   checks.push({ name: "runtime: Node.js", status: nodeOk ? "pass" : maj > 22 ? "warn" : "fail", message: `${process.versions.node}${nodeOk ? "" : maj > 22 ? " (project targets 22.x)" : " (needs 22.12 or newer 22.x)"}` });
 
   return checks;
+}
+
+export type TokenProbe = "current" | "previous" | "none";
+
+/**
+ * Can every stored bank token be read? Only tokens for the environment being checked count: after
+ * a database is copied from another environment, its tokens are expected to be unreadable and are
+ * ignored. With ENCRYPTION_KEY_PREVIOUS unset, any unreadable token is a failure; while it is set,
+ * tokens still on the old key are a warning (rotation not finished).
+ */
+export function tokenKeyCheck(
+  items: { environment: string; accessTokenEnc: string }[],
+  currentEnv: string,
+  previousKeySet: boolean,
+  probe: (ciphertext: string) => TokenProbe,
+): Check {
+  const name = "encryption: stored bank tokens";
+  if (!items.length) return { name, status: "info", message: "no bank connected yet" };
+
+  const mine = items.filter((i) => i.environment === currentEnv);
+  const foreign = items.length - mine.length;
+  const note = foreign ? `; ${foreign} belong to another Plaid environment and are not checked` : "";
+  const results = mine.map((i) => probe(i.accessTokenEnc));
+  const none = results.filter((r) => r === "none").length;
+  const onPrevious = results.filter((r) => r === "previous").length;
+
+  if (none > 0) {
+    return { name, status: "fail", message: `${none} of ${mine.length} token(s) cannot be decrypted with ${previousKeySet ? "the current or previous key" : "the current ENCRYPTION_KEY"}${note}` };
+  }
+  if (onPrevious > 0) {
+    return { name, status: "warn", message: `${onPrevious} of ${mine.length} token(s) still use the previous key: run /api/admin/rotate-tokens${note}` };
+  }
+  return { name, status: mine.length ? "pass" : "info", message: mine.length ? `${mine.length} token(s) decrypt with the current key${note}` : `none for ${currentEnv}${note}` };
 }

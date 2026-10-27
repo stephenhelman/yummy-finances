@@ -2,13 +2,12 @@ import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { callAppsScript } from "@/lib/apps-script";
 import { CloverClient } from "@/lib/clover/client";
-import { decrypt, encrypt } from "@/lib/crypto";
+import { decrypt, encrypt, hasPreviousKey, probeKey } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { getPlaid, plaidErrorSummary } from "@/lib/plaid";
 import { buildLinkTokenRequest } from "@/lib/plaid-link";
 import { parseRedirectUri } from "@/lib/plaid-config";
-import { PlaidItemUnusableError, unlockItemToken } from "@/lib/plaid-item";
-import { checkEnvVars, scrub, type Check } from "@/lib/preflight-env";
+import { checkEnvVars, scrub, tokenKeyCheck, type Check } from "@/lib/preflight-env";
 
 export type { Check };
 
@@ -59,7 +58,7 @@ export async function runPreflight(opts: { context: "cli" | "server"; env?: Node
 
     if (dbChecks[0]?.status === "pass") {
       out.push(...(await attempt("migrations", env, async () => migrationsCheck())));
-      out.push(...(await attempt("plaid: stored items", env, async () => plaidItemsCheck(env))));
+      out.push(...(await attempt("encryption: stored bank tokens", env, async () => plaidItemsCheck(env))));
     }
   }
 
@@ -141,21 +140,14 @@ async function migrationsCheck(): Promise<Check[]> {
   return [{ name: "migrations", status: "pass", message: `${applied.size} applied, none pending` }];
 }
 
-async function plaidItemsCheck(env: NodeJS.ProcessEnv): Promise<Check> {
+async function plaidItemsCheck(env: NodeJS.ProcessEnv): Promise<Check[]> {
   const items = await db.plaidItem.findMany({ select: { environment: true, accessTokenEnc: true, status: true } });
-  if (!items.length) return { name: "plaid: stored items", status: "info", message: "no bank connected yet" };
   const current = env.PLAID_ENV ?? "";
-  const foreign = items.filter((i) => i.environment !== current).length;
+  const checks: Check[] = [tokenKeyCheck(items, current, hasPreviousKey(), probeKey)];
   const mine = items.filter((i) => i.environment === current);
-  for (const i of mine) {
-    try {
-      unlockItemToken(i, current);
-    } catch (e) {
-      if (e instanceof PlaidItemUnusableError) return { name: "plaid: stored items", status: "fail", message: "a stored bank token cannot be decrypted with this ENCRYPTION_KEY" };
-      throw e;
-    }
+  if (mine.length) {
+    const unhealthy = mine.filter((i) => i.status !== "OK").length;
+    checks.push({ name: "plaid: stored items", status: unhealthy ? "warn" : "pass", message: `${mine.length} for ${current}${unhealthy ? `, ${unhealthy} not healthy: see /admin/connections` : ", status ok"}` });
   }
-  const bits = [`${mine.length} for ${current || "?"} (decryptable${mine.some((i) => i.status !== "OK") ? ", but not all healthy: see /admin/connect-bank" : ", status ok"})`];
-  if (foreign) bits.push(`${foreign} belong to another Plaid environment and are ignored`);
-  return { name: "plaid: stored items", status: "pass", message: bits.join("; ") };
+  return checks;
 }

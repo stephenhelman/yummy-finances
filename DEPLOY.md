@@ -36,7 +36,8 @@ Vercel → Project → Settings → Environment Variables → **Production**.
 | Variable | Value / how to get it |
 |---|---|
 | `DATABASE_URL` | **Production** Neon branch, **pooled** connection string (host contains `-pooler`) |
-| `ENCRYPTION_KEY` | A **new** key for production: `openssl rand -base64 32`. Save it in your password manager. If it is lost, the stored bank token is unrecoverable and the bank must be connected again. Never reuse the dev key. |
+| `ENCRYPTION_KEY` | A **new** key for production: `openssl rand -base64 32`. Save it in your password manager. If it is lost, the stored bank token is unrecoverable and the bank must be connected again. Never reuse the dev key. To replace a key later, follow [Key rotation](#key-rotation). |
+| `ENCRYPTION_KEY_PREVIOUS` | **Leave unset.** Set only for the duration of a [key rotation](#key-rotation): the OLD key, so existing tokens stay readable until they are re-encrypted. `preflight` warns while it is set. |
 | `AUTH_SECRET` | `openssl rand -base64 48` (32+ characters) |
 | `CRON_SECRET` | `openssl rand -base64 32` (16+ characters). Also guards `/api/preflight`. |
 | `ADMIN_USER_EMAILS` | Comma-separated allowlist (you and the owner) |
@@ -123,7 +124,7 @@ curl -s -H "Authorization: Bearer $CRON_SECRET" https://<project>.vercel.app/api
 unset CRON_SECRET
 ```
 
-You want `"ok": true` and no `FAIL`. It checks, by name and outcome only (never values): required variables, secret lengths, `APP_URL` is public https, Plaid production guard, `DEV_AUTH_BYPASS` off, Node version, `ENCRYPTION_KEY` decodes to 32 bytes, database reachable, one Business row, no pending migrations, stored bank tokens decryptable, Clover token reaches `/merchants/{mId}` and its timezone matches `BUSINESS_TIMEZONE`, the Plaid client builds for `production`, `PLAID_REDIRECT_URI` equals `APP_URL` + `/plaid/oauth` **and is registered with Plaid**, and the Apps Script mailer (when configured) answers a `ping` with the shared secret, and at least one login method is configured. In production it **fails** if the mailer variables are missing or the ping fails, and **warns** if `LOGIN_PASSCODE` is set.
+You want `"ok": true` and no `FAIL`. It checks, by name and outcome only (never values): required variables, secret lengths, `APP_URL` is public https, Plaid production guard, `DEV_AUTH_BYPASS` off, Node version, `ENCRYPTION_KEY` decodes to 32 bytes, database reachable, one Business row, no pending migrations, every stored bank token for this Plaid environment decrypts with the **current** key (a **fail** otherwise; a **warn** while `ENCRYPTION_KEY_PREVIOUS` is set or tokens still use it), Clover token reaches `/merchants/{mId}` and its timezone matches `BUSINESS_TIMEZONE`, the Plaid client builds for `production`, `PLAID_REDIRECT_URI` equals `APP_URL` + `/plaid/oauth` **and is registered with Plaid**, and the Apps Script mailer (when configured) answers a `ping` with the shared secret, and at least one login method is configured. In production it **fails** if the mailer variables are missing or the ping fails, and **warns** if `LOGIN_PASSCODE` is set.
 
 Fix every `FAIL` before going on. A **"redirect URI registered"** failure means step 1b is not done. A `WARN` is worth reading.
 
@@ -187,6 +188,35 @@ Do this after prod has real data, to test against a realistic copy.
 
 ---
 
+## Key rotation
+
+Use this to replace `ENCRYPTION_KEY` (for example because prod and dev ended up sharing one, or the old key may have been exposed). Stored Plaid access tokens are encrypted with that key; rotation re-encrypts them under a new key **without disconnecting the bank**. It runs inside Vercel, so the production keys never touch your laptop.
+
+How it works: while `ENCRYPTION_KEY_PREVIOUS` is set, the app reads a token with the current key and falls back to the previous one, but it always **writes** with the current key. `POST /api/admin/rotate-tokens` then moves every stored token onto the current key (idempotent; it returns counts only and never logs a token).
+
+> **Order matters.** If you change `ENCRYPTION_KEY` *without* also setting `ENCRYPTION_KEY_PREVIOUS`, every stored token becomes unreadable until you put the old key back (`preflight` fails). Nothing is lost by that mistake, because the tokens are not modified, but syncing stops until it is fixed.
+
+1. **Generate the new key** and save it in your password manager: `openssl rand -base64 32`. Keep the old key too, until step 7.
+2. **In Vercel (Production)** set `ENCRYPTION_KEY` = the **new** key and `ENCRYPTION_KEY_PREVIOUS` = the **old** key.
+3. **Redeploy.** Run the preflight (section 5): expect a **WARN** that rotation is in progress and a WARN that tokens still use the previous key. Any **FAIL** on `encryption:` means a key was pasted wrongly; fix it before going on.
+4. **Rotate the tokens:**
+   ```bash
+   read -rs CRON_SECRET            # paste the production CRON_SECRET
+   curl -s -X POST -H "Authorization: Bearer $CRON_SECRET" https://<project>.vercel.app/api/admin/rotate-tokens | jq
+   unset CRON_SECRET
+   ```
+   Expected: `{"ok":true,"previousKeySet":true,"total":N,"rotated":N,"alreadyCurrent":0,"failed":0}`. Running it again is safe and should report `"rotated":0,"alreadyCurrent":N`.
+5. **Confirm everything rotated:** `failed` must be `0` and `rotated + alreadyCurrent` must equal `total`. If `failed` is not 0 (HTTP 422), **stop**: a token is unreadable with both keys. Do not remove `ENCRYPTION_KEY_PREVIOUS`; check that you pasted the correct old key, or reconnect that bank from `/admin/connections`.
+6. **Delete `ENCRYPTION_KEY_PREVIOUS`** in Vercel and **redeploy**.
+7. **Run the preflight again.** The rotation warnings are gone and `encryption: stored bank tokens` says **PASS** (every token decrypts with the current key). From now on a token that cannot be read with the current key is a **FAIL**.
+8. **Reset the Neon dev branch from prod** (see the next section). Dev's copies of the tokens are then encrypted with the new key, which dev does not have, so they are unreadable there. Dev keeps its own (old) key and must **not** be given the new one.
+
+To rehearse the mechanics without changing anything: `npm run rehearse:rotation` rotates the tokens in the configured database inside a transaction that is always rolled back, and prints counts. (Run it against dev, never with a production URL on your laptop.)
+
+**Old copies.** The previous ciphertexts still exist in Neon's history and backups, and in any earlier copy of the database, and the old key still reads them. If the old key may have leaked, also rotate the bank access tokens at Plaid itself (Plaid's `/item/access_token/invalidate` issues a new token and kills the old one); this app does not do that for you yet.
+
+---
+
 ## If something goes wrong
 
 | Symptom | Likely cause |
@@ -196,6 +226,8 @@ Do this after prod has real data, to test against a realistic copy.
 | Link never opens / immediate Plaid error | Wrong Plaid secret for the environment, or `ALLOW_PLAID_PRODUCTION` is not exactly `true` |
 | "The bank return address isn't registered with Plaid yet" | Step 1b: register `PLAID_REDIRECT_URI` in the Plaid Dashboard |
 | Bank redirects back and the page says "can't be finished here" | The connection was started in another tab/browser, or session storage was cleared. Start again from Connections. |
-| "stored bank token cannot be decrypted" | `ENCRYPTION_KEY` differs from the one that encrypted it |
+| "stored bank token cannot be decrypted" | `ENCRYPTION_KEY` differs from the one that encrypted it. If you are mid-rotation, set `ENCRYPTION_KEY_PREVIOUS` to the old key. |
+| `rotate-tokens` returns 422 / `failed` > 0 | A token is unreadable with both keys: check `ENCRYPTION_KEY_PREVIOUS` is the key that encrypted it, or reconnect that bank |
+| `rotate-tokens` returns 500 `ENCRYPTION_KEY…` | A key variable is missing or not 32 bytes (the message names the variable, never its value) |
 | Status `LOGIN_REQUIRED` | Normal after a bank password change or expiry: use **Reconnect bank** |
 | Sync says "already running" | Another sync is in progress; a crashed run frees itself after 10 minutes |

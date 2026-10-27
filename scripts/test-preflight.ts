@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { CLI_ONLY_VARS, REQUIRED_VARS, checkEnvVars, isDeployed, scrub } from "../src/lib/preflight-env";
+import { CLI_ONLY_VARS, REQUIRED_VARS, checkEnvVars, isDeployed, scrub, tokenKeyCheck, type TokenProbe } from "../src/lib/preflight-env";
 import { PlaidItemUnusableError, unlockItemToken } from "../src/lib/plaid-item";
 import { encrypt } from "../src/lib/crypto";
 
@@ -122,6 +122,50 @@ const by = (cs: ReturnType<typeof checkEnvVars>, name: string) => cs.find((c) =>
   assert.equal(by(checkEnvVars(full({ APP_URL: app, PLAID_REDIRECT_URI: `${app}/oauth` }), "cli"), name).status, "warn", "mismatch warns locally");
   assert.equal(by(checkEnvVars(full({ APP_URL: app, PLAID_REDIRECT_URI: `${app}/oauth`, VERCEL_ENV: "production" }), "cli"), name).status, "fail", "mismatch fails when deployed");
   assert.equal(by(checkEnvVars(full({ PLAID_REDIRECT_URI: "http://app.example.com/plaid/oauth", PLAID_ENV: "production", ALLOW_PLAID_PRODUCTION: "true" }), "cli"), name).status, "fail", "http rejected");
+}
+
+// ---- key rotation states
+{
+  const k = () => randomBytes(32).toString("base64");
+  const name = "encryption: ENCRYPTION_KEY_PREVIOUS";
+  const cur = k();
+  const find = (e: ReturnType<typeof full>) => checkEnvVars(e, "cli").find((c) => c.name === name);
+  assert.equal(find(full({ ENCRYPTION_KEY: cur })), undefined, "nothing reported when not rotating");
+  assert.equal(find(full({ ENCRYPTION_KEY: cur, ENCRYPTION_KEY_PREVIOUS: "" })), undefined);
+  const rotating = find(full({ ENCRYPTION_KEY: cur, ENCRYPTION_KEY_PREVIOUS: k() }))!;
+  assert.equal(rotating.status, "warn", "warns while a previous key is set");
+  assert.match(rotating.message, /rotate-tokens/);
+  assert.equal(find(full({ ENCRYPTION_KEY: cur, ENCRYPTION_KEY_PREVIOUS: "short" }))!.status, "fail", "malformed previous key fails");
+  assert.equal(find(full({ ENCRYPTION_KEY: cur, ENCRYPTION_KEY_PREVIOUS: cur }))!.status, "warn", "identical previous key warns");
+  const all = JSON.stringify(checkEnvVars(full({ ENCRYPTION_KEY: cur, ENCRYPTION_KEY_PREVIOUS: "secretprevious1234567890" }), "cli"));
+  assert.ok(!all.includes(cur) && !all.includes("secretprevious"), "no key material in messages");
+
+  // stored-token states. probe = how a token reads under the current/previous keys.
+  const item = (environment: string, tag: string) => ({ environment, accessTokenEnc: tag });
+  const probe = (map: Record<string, TokenProbe>) => (enc: string) => map[enc] ?? "none";
+  const tname = "encryption: stored bank tokens";
+
+  assert.equal(tokenKeyCheck([], "production", false, probe({})).status, "info", "no bank yet");
+  assert.equal(tokenKeyCheck([item("production", "a"), item("production", "b")], "production", false, probe({ a: "current", b: "current" })).status, "pass");
+  // previous UNSET and a token cannot be read: fail
+  const failing = tokenKeyCheck([item("production", "a"), item("production", "b")], "production", false, probe({ a: "current", b: "none" }));
+  assert.equal(failing.status, "fail");
+  assert.match(failing.message, /1 of 2 token\(s\) cannot be decrypted with the current ENCRYPTION_KEY/);
+  assert.equal(failing.name, tname);
+  // a token that still reads only via the previous key means rotation is not finished: warn
+  assert.equal(tokenKeyCheck([item("production", "a")], "production", true, probe({ a: "previous" })).status, "warn", "rotation not finished");
+  assert.match(tokenKeyCheck([item("production", "a")], "production", true, probe({ a: "previous" })).message, /rotate-tokens/);
+  // previous SET: all on current is fine; unreadable by both keys still fails
+  assert.equal(tokenKeyCheck([item("production", "a")], "production", true, probe({ a: "current" })).status, "pass");
+  const both = tokenKeyCheck([item("production", "a")], "production", true, probe({ a: "none" }));
+  assert.equal(both.status, "fail");
+  assert.match(both.message, /current or previous key/);
+  // another environment's tokens are expected to be unreadable (a dev database copied from prod): not a failure
+  const copied = tokenKeyCheck([item("production", "p1"), item("production", "p2")], "sandbox", false, probe({}));
+  assert.notEqual(copied.status, "fail");
+  assert.match(copied.message, /2 belong to another Plaid environment/);
+  const mixedEnv = tokenKeyCheck([item("sandbox", "s"), item("production", "p")], "sandbox", false, probe({ s: "current" }));
+  assert.equal(mixedEnv.status, "pass");
 }
 
 // ---- unusable Plaid items: wrong environment, wrong key
