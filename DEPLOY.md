@@ -6,7 +6,7 @@ Run these in order. Do not skip ahead: step 6 is the first time a real bank is t
 
 - Production is the Neon **default branch**. Dev is the Neon **`dev` branch**. Their endpoints differ; always check the host the tool prints before you let it write.
 - The production database URL is never put in `.env`. It lives in Vercel, and for the two commands that need it on your machine (steps 2 and 3) it lives in a one-off shell variable.
-- Use `prisma migrate deploy` against production. Never `migrate dev`, `migrate reset` or `db push`.
+- Migrate production only with `npm run db:deploy -- --target prod` (it checks the Neon endpoint against `YUMMY_PROD_ENDPOINT` first and wraps `prisma migrate deploy`). Never `migrate dev`, `migrate reset` or `db push`.
 - Use Node 22 locally (`.nvmrc`; the project pins `22.x`).
 
 ---
@@ -77,21 +77,25 @@ Project settings: Node.js version **22.x** (also enforced by `engines` in `packa
 
 From your machine, in the repo, with Node 22. The production **direct** (non-pooled) URL goes in a one-off variable; `read -rs` does not echo it or write it to shell history.
 
+**Never run `prisma migrate deploy` directly.** Use the guarded wrapper. It prints the Neon endpoint first and refuses unless `DIRECT_URL`'s endpoint ID equals `YUMMY_PROD_ENDPOINT` (or `YUMMY_DEV_ENDPOINT` for `--target dev`). Set both in your local `.env` once (the `ep-xxxx-xxxx-xxxxxxxx` part of each host, no `-pooler`; never on Vercel). This exists because Yummy migrations were once applied to another project's database.
+
 ```bash
 read -rs PROD_DIRECT_URL        # paste the PRODUCTION direct URL, press Enter
 
-DIRECT_URL="$PROD_DIRECT_URL" npx prisma migrate status
+DIRECT_URL="$PROD_DIRECT_URL" npm run db:status -- --target prod
 ```
 
-Read the `Datasource "db"` line: the host must be the **production** endpoint, **not** the dev one (dev is `ep-shy-wave-…`). If it is wrong, stop.
+Read the `Endpoint:` line it prints and confirm it is the **production** endpoint for **this** app (not dev, `ep-shy-wave-…`, and not any other project). If it says `REFUSED`, stop; nothing ran.
 The shell variable overrides `.env`, so your dev URL is not used.
 
 Expected: some migrations already applied (the first three went to this branch early on), the rest pending. Then:
 
 ```bash
-DIRECT_URL="$PROD_DIRECT_URL" npx prisma migrate deploy
-DIRECT_URL="$PROD_DIRECT_URL" npx prisma migrate status    # "Database schema is up to date!"
+DIRECT_URL="$PROD_DIRECT_URL" npm run db:deploy -- --target prod
+DIRECT_URL="$PROD_DIRECT_URL" npm run db:status -- --target prod    # "Database schema is up to date!"
 ```
+
+`npm run predeploy -- --target prod` runs the check alone.
 
 ## 3. Seed production
 
@@ -181,8 +185,8 @@ Use this whenever the rules or categories change (a new rule, a category rename)
 
 1. **Migrate production** (from your machine, as in step 2):
    ```bash
-   DIRECT_URL="$PROD_DIRECT_URL" npx prisma migrate deploy
-   DIRECT_URL="$PROD_DIRECT_URL" npx prisma migrate status      # "Database schema is up to date!"
+   DIRECT_URL="$PROD_DIRECT_URL" npm run db:deploy -- --target prod
+   DIRECT_URL="$PROD_DIRECT_URL" npm run db:status -- --target prod      # "Database schema is up to date!"
    ```
    Do this **before** pushing: the new code expects the new columns.
 2. **Push** (or `vercel --prod`).
