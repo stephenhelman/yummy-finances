@@ -2,6 +2,8 @@ import { db } from "@/lib/db";
 import { currentMonth } from "@/lib/dates";
 import { checkItemHealth, getPlaid, plaidErrorSummary, refreshAccounts } from "@/lib/plaid";
 import { PlaidItemUnusableError, unlockItemToken } from "@/lib/plaid-item";
+import { applyRules, type ApplyResult } from "@/lib/rules/apply";
+import { prismaRulesStore } from "@/lib/rules/prisma-store";
 import {
   isReportable,
   lateAdjustment,
@@ -65,7 +67,17 @@ export type SyncCounts = {
 
 export type SyncOutcome =
   | { status: "not_ready" }
-  | { status: "synced"; counts: SyncCounts; pages: number; restarts: number; nextCursor: string };
+  | {
+      status: "synced";
+      counts: SyncCounts;
+      pages: number;
+      restarts: number;
+      nextCursor: string;
+      /** Result of categorizing the new/changed rows (absent when no hook was given or nothing changed). */
+      rules?: ApplyResult;
+      /** Categorizing failed. The sync itself succeeded (its cursor is committed); the next sync retries. */
+      rulesError?: string;
+    };
 
 const MUTATION = "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION";
 const MAX_PAGES = 1000;
@@ -146,6 +158,11 @@ export async function runSync(args: {
   openMonth: string;
   chunkSize?: number;
   maxRestarts?: number;
+  /**
+   * Called after the cursor is committed with the Plaid ids of every row this sync created, changed or removed,
+   * to categorize them (and re-pair within the 5-day window). A failure here never fails the sync.
+   */
+  afterCommit?: (plaidTransactionIds: string[]) => Promise<ApplyResult>;
 }): Promise<SyncOutcome> {
   const { startCursor, fetchPage, store, now, openMonth } = args;
   const size = args.chunkSize ?? 200;
@@ -229,11 +246,25 @@ export async function runSync(args: {
 
   await store.commitCursor(fetched.nextCursor, now); // last, and only after every chunk committed
 
+  // Categorize what changed. The data is already safely stored, so this cannot fail the sync.
+  let rules: ApplyResult | undefined;
+  let rulesError: string | undefined;
+  const touched = [...new Set([...creates.map((r) => r.plaidTransactionId), ...updates.map((u) => u.plaidTransactionId), ...removes.map((r) => r.plaidTransactionId)])];
+  if (args.afterCommit && touched.length) {
+    try {
+      rules = await args.afterCommit(touched);
+    } catch (e) {
+      rulesError = e instanceof Error ? e.message : "categorizing failed";
+    }
+  }
+
   return {
     status: "synced",
     pages: fetched.pages,
     restarts: fetched.restarts,
     nextCursor: fetched.nextCursor,
+    ...(rules ? { rules } : {}),
+    ...(rulesError ? { rulesError } : {}),
     counts: {
       apiAdded: fetched.api.added,
       apiModified: fetched.api.modified,
@@ -388,6 +419,7 @@ export async function syncPlaidItem(itemId: string, now = new Date()): Promise<I
       store: prismaStore(item),
       now,
       openMonth: currentMonth(now, item.business.timezone),
+      afterCommit: (ids) => applyRules(prismaRulesStore(db, item.businessId), { plaidTransactionIds: ids }),
     });
     return out.status === "not_ready" ? { outcome: "not_ready", itemStatus: health.status } : { outcome: "synced", itemStatus: health.status, ...out };
   } catch (e) {

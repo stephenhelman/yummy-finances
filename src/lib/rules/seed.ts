@@ -1,41 +1,21 @@
+import { makeBuilders, type RuleOpt } from "@/lib/rules/builders";
 import { CAT } from "@/lib/rules/categories";
-import type { Direction, Kind, RuleDef } from "@/lib/rules/types";
+import type { RuleDef } from "@/lib/rules/types";
 
 // Seed rules, derived from the owner's real transactions. They classify automatically. The owner has
 // CONFIRMED some (marked below); the rest stay unconfirmed and show as "auto, unconfirmed" until a
 // person confirms them. Anything not covered (most checks, Zelle, branch/ATM withdrawals, restaurants
 // and fast food) stays in the review queue.
 
-const base = { target: "normalized" as const, matchType: "STARTS_WITH" as const, confirmed: false, source: "SEED" as const };
-
-type Opt = Partial<Pick<RuleDef, "accounts" | "expectMultiAccount" | "expectBothDirections" | "note" | "matchType" | "priority" | "confirmed" | "amountMinCents" | "amountMaxCents" | "target">>;
-
-const rule = (id: string, name: string, pattern: string, direction: Direction, kind: Kind, categoryName: string | undefined, opt: Opt = {}): RuleDef => ({
-  ...base,
-  id: `seed:${id}`,
-  name,
-  pattern,
-  direction,
-  kind,
-  categoryName,
-  priority: 100,
-  ...opt,
-});
-
-/** A vendor you buy from: purchases are EXPENSE in the category; refunds from the same vendor are VENDOR_REFUND in it. */
-function vendor(id: string, name: string, pattern: string, category: string, opt: Opt = {}): RuleDef[] {
-  return [
-    rule(`${id}:purchase`, `${name} (purchases)`, pattern, "out", "EXPENSE", category, { expectMultiAccount: true, ...opt }),
-    rule(`${id}:refund`, `${name} (refunds)`, pattern, "in", "VENDOR_REFUND", category, { expectMultiAccount: true, ...opt }),
-  ];
-}
+const { rule, vendor } = makeBuilders({ idPrefix: "seed", source: "SEED", confirmed: false, priority: 100 });
+type Opt = RuleOpt;
 
 const CHASE: Opt = { accounts: [{ institution: "Chase" }] };
 const OWNER_CONFIRMED: Opt = { confirmed: true };
 
 /** Rules added after the first dry run. The report compares classification with and without them. */
 export const OWNER_DECISION_RULE_IDS = ["seed:checks-rent", "seed:sj-mexican:purchase", "seed:sj-mexican:refund"];
-export const UNCONFIRMED_ADDITION_RULE_IDS = ["seed:mexican-specialty:purchase", "seed:mexican-specialty:refund"];
+export const ADDITION_RULE_IDS = ["seed:mexican-specialty:purchase", "seed:mexican-specialty:refund"];
 
 export const SEED_RULES: RuleDef[] = [
   // --- card settlements and cash
@@ -78,11 +58,11 @@ export const SEED_RULES: RuleDef[] = [
   // --- loans (non-P&L). The matching cash note is in cash-notes.ts. CONFIRMED.
   rule("firstlight-fcu", "FirstLight FCU loan payment", "FIRSTLIGHT FCU", "out", "LOAN_PAYMENT", undefined, OWNER_CONFIRMED),
 
-  // ===== Additions beyond what the owner listed. Each is clearly supported by the data; all unconfirmed. =====
-  rule("bankcard-discount", "Card processor discount fee (MTOT DISC)", "BANKCARD MTOT DISC", "out", "EXPENSE", CAT.CARD_FEES, { note: "monthly processing-fee debit from the same processor as the settlement deposits" }),
-  rule("clover-app", "Clover app subscription", "CLOVER APP", "out", "EXPENSE", CAT.SOFTWARE),
-  rule("chase-card-payment", "Payment to the Chase card (fallback when no matching credit is found)", "CHASE CREDIT CRD EPAY", "out", "CARD_PAYMENT", undefined, { note: "normally handled by the pair matcher" }),
-  rule("transfer-between-boa", "Transfer between the two BoA accounts (fallback when unpaired)", "ONLINE BANKING TRANSFER (TO|FROM) CHK (2879|9334)$", "any", "INTERNAL_TRANSFER", undefined, { matchType: "REGEX", expectBothDirections: true, note: "normally handled by the pair matcher" }),
-  // The bank truncates the same vendor to "MEXICAN SPECIA…" (no "S.J." in front). Probably S.J. Mexican, so the same category, unconfirmed.
-  ...vendor("mexican-specialty", "Mexican Specialty Products (probably S.J. Mexican)", "MEXICAN SPECIA", CAT.CANDY, { note: "bank-truncated variant without the 'S.J.'; the owner confirmed only the SQ *S. J. MEXICAN names" }),
+  // ===== Additions beyond what the owner first listed; the owner accepted all of them (confirmed). =====
+  rule("bankcard-discount", "Card processor discount fee (MTOT DISC)", "BANKCARD MTOT DISC", "out", "EXPENSE", CAT.CARD_FEES, { ...OWNER_CONFIRMED, note: "monthly processing-fee debit from the same processor as the settlement deposits" }),
+  rule("clover-app", "Clover app subscription", "CLOVER APP", "out", "EXPENSE", CAT.SOFTWARE, OWNER_CONFIRMED),
+  rule("chase-card-payment", "Payment to the Chase card (fallback when no matching credit is found)", "CHASE CREDIT CRD EPAY", "out", "CARD_PAYMENT", undefined, { ...OWNER_CONFIRMED, note: "normally handled by the pair matcher" }),
+  rule("transfer-between-boa", "Transfer between the two BoA accounts (fallback when unpaired)", "ONLINE BANKING TRANSFER (TO|FROM) CHK (2879|9334)$", "any", "INTERNAL_TRANSFER", undefined, { ...OWNER_CONFIRMED, matchType: "REGEX", expectBothDirections: true, note: "normally handled by the pair matcher" }),
+  // The bank truncates the same vendor to "MEXICAN SPECIA…" (no "S.J." in front): the same category. Confirmed.
+  ...vendor("mexican-specialty", "Mexican Specialty Products (probably S.J. Mexican)", "MEXICAN SPECIA", CAT.CANDY, { ...OWNER_CONFIRMED, note: "bank-truncated variant without the 'S.J.'; confirmed by the owner" }),
 ];

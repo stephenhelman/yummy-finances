@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { classify, ruleMatches, sortRules } from "../src/lib/rules/engine";
 import { mergeTruncatedKeys, normalizeDescriptor as norm } from "../src/lib/rules/normalize";
 import { matchPairs } from "../src/lib/rules/pairs";
-import { SEED_RULES, OWNER_DECISION_RULE_IDS, UNCONFIRMED_ADDITION_RULE_IDS } from "../src/lib/rules/seed";
+import { SEED_RULES, OWNER_DECISION_RULE_IDS, ADDITION_RULE_IDS } from "../src/lib/rules/seed";
+import { USER_RULES } from "../src/lib/rules/user-rules";
+import { ALL_RULES } from "../src/lib/rules/all";
 import { CAT, PLANNED_CATEGORY_CHANGES, applyPlannedCategoryChanges } from "../src/lib/rules/categories";
 import { CASH_NOTES, cashNotesFor } from "../src/lib/rules/cash-notes";
 import { CHECK_PICKS, ZELLE_PICKS, quickPicksFor } from "../src/lib/rules/review";
@@ -254,12 +256,14 @@ const one = (t: TxnInput, rules: RuleDef[] = SEED_RULES) => classify([t], rules,
     "seed:owner-draw-3831", "seed:owner-contribution-3831", "seed:checks-rent", "seed:davo-sales-tax", "seed:firstlight-fcu",
     "seed:creamland:purchase", "seed:creamland:refund", "seed:sj-mexican:purchase", "seed:sj-mexican:refund",
     "seed:sams-club:purchase", "seed:sams-club:refund", "seed:walmart:purchase", "seed:walmart:refund", "seed:home-depot:purchase", "seed:home-depot:refund",
+    // the owner accepted the four additions and the MEXICAN SPECIA variant
+    "seed:bankcard-discount", "seed:clover-app", "seed:chase-card-payment", "seed:transfer-between-boa", "seed:mexican-specialty:purchase", "seed:mexican-specialty:refund",
   ].sort();
   assert.deepEqual(SEED_RULES.filter((r) => r.confirmed).map((r) => r.id).sort(), CONFIRMED);
-  for (const id of ["seed:target:purchase", "seed:target:refund", "seed:mexican-specialty:purchase", "seed:economy-cash-carry:purchase", "seed:clover-settlement", "seed:bankcard-discount"]) {
+  for (const id of ["seed:target:purchase", "seed:target:refund", "seed:economy-cash-carry:purchase", "seed:clover-settlement", "seed:payroll-homebase", "seed:cash-atm-deposit", "seed:webstaurant:purchase"]) {
     assert.equal(SEED_RULES.find((r) => r.id === id)?.confirmed, false, id);
   }
-  assert.ok(OWNER_DECISION_RULE_IDS.every((id) => SEED_RULES.some((r) => r.id === id)) && UNCONFIRMED_ADDITION_RULE_IDS.every((id) => SEED_RULES.some((r) => r.id === id)));
+  assert.ok(OWNER_DECISION_RULE_IDS.every((id) => SEED_RULES.some((r) => r.id === id)) && ADDITION_RULE_IDS.every((id) => SEED_RULES.some((r) => r.id === id)));
   assert.equal(new Set(SEED_RULES.map((r) => r.id)).size, SEED_RULES.length, "unique ids");
   for (const r of SEED_RULES) assert.deepEqual(validateRule(r), [], r.id);
 
@@ -524,6 +528,48 @@ const one = (t: TxnInput, rules: RuleDef[] = SEED_RULES) => classify([t], rules,
   assert.deepEqual(validateRule(odd), []);
   assert.equal(one(tx("Zelle payment to Jo (Jr.) O'Neil Conf# x", 1000), [odd]).kind, "EXPENSE");
   assert.equal(one(tx("Zelle payment to Jo JrX O'Neil Conf# x", 1000), [odd]).kind, null);
+}
+
+// ===== 9. the owner's confirmed USER rules ==========================================================================
+{
+  assert.ok(USER_RULES.every((r) => r.source === "USER" && r.confirmed && r.priority === 50), "USER, confirmed, outrank seeds");
+  assert.ok(USER_RULES.every((r) => r.note === "Confirmed by Stephen"));
+  for (const r of USER_RULES) assert.deepEqual(validateRule(r), [], r.id);
+  assert.equal(new Set(ALL_RULES.map((r) => r.id)).size, ALL_RULES.length, "ids unique across seed and user rules");
+  assert.equal(USER_RULES.length, 16, "8 vendors x (purchase + refund)");
+  const k = (raw: string, cents: number, account = BOA2879) => one(tx(raw, cents, account), ALL_RULES);
+  const cases: [string, number, string, string][] = [
+    ["EL PASO PRODUC 10/13 #XXXXX3812 PURCHASE 3701 ALAMEDA AVE EL PASO TX CKCD 5499 XXXXXXXXXX123456", 9341, "EXPENSE", CAT.DAIRY],
+    ["EL PASO PRODUCE", 8200, "EXPENSE", CAT.DAIRY],
+    ["SEGOVIAS DISTR 10/08 #XXXXX8851 PURCHASE 3701 SHELL STREET EL PASO TX CKCD 5411 XXXXXXXXXX123456", 13087, "EXPENSE", CAT.DAIRY],
+    ["CHECKCARD 0903 SEGOVIAS DISTRIBU EL PASO TX XXXXX1234XXXXXXXXXX1234 CKCD 5411 XXXXXXXXXX123456", 5100, "EXPENSE", CAT.DAIRY],
+    ["SEGOVIAS DISTRIBUTING INC", 31500, "EXPENSE", CAT.DAIRY],
+    ["ALTA DENA CERTIFIED DAIRY", 137072, "EXPENSE", CAT.DAIRY],
+    ["OVERDRAFT ITEM FEE FOR ACTIVITY OF 06-18 ELECTRONIC TRANSACTION POSTING DATE 06-19-26 POSTING SEQUENCE 123", 1000, "EXPENSE", CAT.BANK_FEES],
+    ["OVERDRAFT ITEM FEE FOR ACTIVITY OF 06-18 CHECK #XXXXX12345 POSTING DATE 06-19-26", 1000, "EXPENSE", CAT.BANK_FEES],
+    ["OVERDRAFT ITEM FEE FOR ACTIVITY OF 06-18 ELECTRONIC TRANSACTION POSTING DATE 06-19-26", -1000, "VENDOR_REFUND", CAT.BANK_FEES],
+    ["joinhomebase.com DES:joinhomeba ID:ST-C9G9U9F9B9I9 INDN:IRIS TERRAZAS CO ID:XXXXX99999 CCD", 11260, "EXPENSE", CAT.PAYROLL_SERVICE],
+    ["PURCHASE 1020 ATT*BILL PAYMENT XXXXX99999 TX XXXXX9999XXXXXXXXXX9999 RECURRING CKCD 4814 XXXXXXXXXX123456", 9720, "EXPENSE", CAT.INTERNET_PHONE],
+    ["ATT*BILL PAYMENT", 9720, "EXPENSE", CAT.INTERNET_PHONE],
+    ["CHECKCARD 0814 WIX.COM XXXXX9999 XXXXX99999 CA XXXXX9999XXXXXXXXXX9999 RECURRING CKCD 7372 XXXXXXXXXX123456", 4850, "EXPENSE", CAT.SOFTWARE],
+    ["PURCHASE 0814 Wix.com XXXXX9999 XXXXX99999 NY XXXXX9999XXXXXXXXXX9999 RECURRING CKCD 7372", 4850, "EXPENSE", CAT.SOFTWARE],
+    ["Farmers Ins Exch DES:EFT PYMT ID:fXXXXX9999 INDN:. Iris Terrazas CO ID:XXXXX99999 CCD", 12123, "EXPENSE", CAT.INSURANCE],
+    ["Farmers Ins Exch DES:EFT PYMT ID:fXXXXX9999 INDN:La Michoacana Yummy LL CO ID:XXXXX99999 WEB", 12123, "EXPENSE", CAT.INSURANCE],
+  ];
+  for (const [raw, cents, kind, cat] of cases) {
+    const d = k(raw, cents);
+    assert.deepEqual([d.kind, d.categoryName, d.status], [kind, cat, "AUTO"], raw.slice(0, 50));
+    assert.ok(d.ruleId?.startsWith("user:"), `${raw.slice(0, 40)} decided by a user rule`);
+  }
+  // not confused with look-alikes
+  assert.equal(k("SPROUTS FARMER 10/12 #XXXXX9999 MOBILE PURCHASE SPROUTS FARMERS EL PASO TX CKCD 5411", 2500).kind, null, "Sprouts Farmers Market is not Farmers Insurance");
+  assert.equal(k("PAYROLL HOMEBASE DES:PCR ID:X INDN:La Michoacana Yummy LL CO ID:XXXXX99999 CCD", 250000).categoryName, CAT.WAGES, "payroll runs stay Wages; only the joinhomebase subscription is Payroll service fees");
+  assert.equal(k("WIXOM MICHIGAN HARDWARE", 1500).kind, null, "WIX needs a word boundary");
+  assert.equal(k("ATTORNEY OFFICE", 50000).kind, null);
+  // and the owner's rules outrank a seed rule that would also match
+  const rival = { ...SEED_RULES[0], id: "seed:rival", pattern: "EL PASO PRODUC", direction: "out" as const, kind: "EXPENSE" as const, categoryName: CAT.SUPPLIES, priority: 100, confirmed: false };
+  const both = one(tx("EL PASO PRODUC 10/13 #XXXXX3812 PURCHASE", 5000), [rival, ...USER_RULES]);
+  assert.equal(both.categoryName, CAT.DAIRY);
 }
 
 console.log("rules ok");

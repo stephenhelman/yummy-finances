@@ -7,7 +7,8 @@ import { db } from "@/lib/db";
 import { getPlaid, plaidErrorSummary } from "@/lib/plaid";
 import { buildLinkTokenRequest } from "@/lib/plaid-link";
 import { parseRedirectUri } from "@/lib/plaid-config";
-import { checkEnvVars, scrub, tokenKeyCheck, type Check } from "@/lib/preflight-env";
+import { backfillCompletedAt } from "@/lib/rules/readiness";
+import { checkEnvVars, rulesReadinessCheck, scrub, tokenKeyCheck, type Check } from "@/lib/preflight-env";
 
 export type { Check };
 
@@ -58,6 +59,13 @@ export async function runPreflight(opts: { context: "cli" | "server"; env?: Node
 
     if (dbChecks[0]?.status === "pass") {
       out.push(...(await attempt("migrations", env, async () => migrationsCheck())));
+      out.push(
+        ...(await attempt("rules: classification", env, async () => {
+          const business = await db.business.findFirst({ select: { id: true } });
+          if (!business) return { name: "rules: classification", status: "info", message: "no business row yet" };
+          return rulesReadinessCheck(await db.rule.count({ where: { businessId: business.id, active: true } }), await backfillCompletedAt(db, business.id));
+        })),
+      );
       out.push(...(await attempt("encryption: stored bank tokens", env, async () => plaidItemsCheck(env))));
     }
   }

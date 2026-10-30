@@ -11,7 +11,8 @@ import { mergeTruncatedKeys, normalizeDescriptor } from "../src/lib/rules/normal
 import { applyPlannedCategoryChanges } from "../src/lib/rules/categories";
 import { cashNotesFor } from "../src/lib/rules/cash-notes";
 import { quickPicksFor } from "../src/lib/rules/review";
-import { OWNER_DECISION_RULE_IDS, SEED_RULES, UNCONFIRMED_ADDITION_RULE_IDS } from "../src/lib/rules/seed";
+import { ALL_RULES as SEED_RULES } from "../src/lib/rules/all";
+import { OWNER_DECISION_RULE_IDS, ADDITION_RULE_IDS } from "../src/lib/rules/seed";
 import { PNL_KINDS, validateRule, type Decision, type Kind, type TxnInput } from "../src/lib/rules/types";
 
 const usd = (c: number) => (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
@@ -58,8 +59,8 @@ async function main() {
   // ---- classify EVERYTHING (the pair matcher needs all accounts and dates), report on Jan-Oct 2026 --
   const decisions = classify(txns, SEED_RULES);
   // Comparison sets over identical data: before the owner's answers, with the owner's decisions, and with my unconfirmed addition too.
-  const decisionsBefore = classify(txns, SEED_RULES.filter((r) => ![...OWNER_DECISION_RULE_IDS, ...UNCONFIRMED_ADDITION_RULE_IDS].includes(r.id)));
-  const decisionsOwnerOnly = classify(txns, SEED_RULES.filter((r) => !UNCONFIRMED_ADDITION_RULE_IDS.includes(r.id)));
+  const decisionsBefore = classify(txns, SEED_RULES.filter((r) => ![...OWNER_DECISION_RULE_IDS, ...ADDITION_RULE_IDS].includes(r.id)));
+  const decisionsOwnerOnly = classify(txns, SEED_RULES.filter((r) => !ADDITION_RULE_IDS.includes(r.id)));
   const inScope = decisions.filter((d) => MONTHS.includes(byId.get(d.txnId)!.date.slice(0, 7)));
   const monthOf = (d: Decision) => byId.get(d.txnId)!.date.slice(0, 7);
   const cents = (d: Decision) => Math.abs(byId.get(d.txnId)!.amountCents);

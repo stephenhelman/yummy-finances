@@ -108,7 +108,9 @@ npx prisma db seed
 unset PROD_DIRECT_URL
 ```
 
-Expected output: `Created business …` and `Categories ensured: 32`.
+Expected output: `Created business …`, `Categories ensured: 32` and `Rules: 57 created, 0 updated, 0 unchanged (57 defined)`. On a database that already has the old category name it also prints `Renamed category "Ingredients and dairy" to "Dairy & ingredients"`.
+
+> You do **not** need to run the seed on production for the rules: the [Rules release](#rules-release) (the `apply-rules` call) applies the category changes, stores the rules and categorizes existing transactions from inside Vercel, so production credentials stay there. The seed's rule step is for dev.
 
 ## 4. Deploy
 
@@ -171,6 +173,46 @@ Click **Sync now** on `/admin/connections` and keep the page open. It runs the P
 
 ---
 
+## Rules release
+
+Use this whenever the rules or categories change (a new rule, a category rename), including the very first time on a database that has existing transactions. It runs **inside Vercel**, so production credentials never touch your machine. It is idempotent: calling it twice is safe, and the second call changes nothing.
+
+**Order matters:**
+
+1. **Migrate production** (from your machine, as in step 2):
+   ```bash
+   DIRECT_URL="$PROD_DIRECT_URL" npx prisma migrate deploy
+   DIRECT_URL="$PROD_DIRECT_URL" npx prisma migrate status      # "Database schema is up to date!"
+   ```
+   Do this **before** pushing: the new code expects the new columns.
+2. **Push** (or `vercel --prod`).
+3. **Wait for the deployment to be Ready** in Vercel. Calling the route while the old build is still live would run old code.
+4. **Call `apply-rules`:**
+   ```bash
+   read -rs CRON_SECRET            # paste the production CRON_SECRET
+   curl -s -X POST -H "Authorization: Bearer $CRON_SECRET" https://<project>.vercel.app/api/admin/apply-rules | jq
+   unset CRON_SECRET
+   ```
+   It takes up to a few minutes on the first run (the limit is 300 s). If it times out, call it again: it picks up where it left off.
+5. **Check the summary** in the response (counts only). On the first run expect:
+   - `"ok": true`, `"alreadyUpToDate": false`
+   - `categories`: `renamed` 1 (the old name becomes "Dairy & ingredients") and `added` 1 ("Candy & toppings")
+   - `rules`: `created` 57, `total` 57
+   - `applied`: `changed` equal to `considered` (every row is categorized the first time), `skippedLocked` 0 (no month is locked yet), `legacyCleared` equal to the leftover default kinds
+   - `summary.autoClassifiedPct` and `pnlClassifiedPct`: the share of outflow dollars sorted automatically. These depend on the real data; large drops from what you saw on dev mean something is off.
+6. **Call it a second time**: it must report `"alreadyUpToDate": true` and zero changes.
+7. **Run the preflight** (step 5). `rules: classification` should say **PASS** (rules stored, backfill completed). It is a **WARN** until the release has run.
+
+What it does, in order (and stops at the first failure, leaving nothing half-done): applies the planned category changes (a rename keeps the same row, so nothing already linked to it is lost), stores the rules, categorizes every transaction, then writes a "backfill complete" marker. It never un-confirms or re-enables a rule that already exists, never overwrites a transaction a person categorized, and never touches a month that has been locked.
+
+**Until it has run, nothing reads categories.** Transaction categories are marked "pending" until the release has completed: the marker is what `classificationReady` / `requireClassification` check, and a test fails if new code reads transactions without using them.
+
+Rehearse it any time on dev with `npm run rehearse:release`: it resets dev to the "just migrated" state inside a transaction that is always rolled back, runs the release twice, and prints the counts.
+
+If it fails: a message starting with `Category` or `Rule` names the problem (for example a rule that refers to a category that does not exist); anything else is "rules release failed" and the details are in the Vercel function log. A `409 already_running` means another call is in progress (a crashed call frees itself after 15 minutes).
+
+---
+
 ## Resetting the Neon dev branch from prod
 
 Do this after prod has real data, to test against a realistic copy.
@@ -227,6 +269,8 @@ To rehearse the mechanics without changing anything: `npm run rehearse:rotation`
 | "The bank return address isn't registered with Plaid yet" | Step 1b: register `PLAID_REDIRECT_URI` in the Plaid Dashboard |
 | Bank redirects back and the page says "can't be finished here" | The connection was started in another tab/browser, or session storage was cleared. Start again from Connections. |
 | "stored bank token cannot be decrypted" | `ENCRYPTION_KEY` differs from the one that encrypted it. If you are mid-rotation, set `ENCRYPTION_KEY_PREVIOUS` to the old key. |
+| `apply-rules` returns 500 `Category … does not exist` | A rule refers to a category the database lacks: the release creates the planned ones itself; any other missing name means a category was renamed or deleted by hand |
+| `preflight` `WARN rules: classification` | The rules release has not run on this database yet: [Rules release](#rules-release) |
 | `rotate-tokens` returns 422 / `failed` > 0 | A token is unreadable with both keys: check `ENCRYPTION_KEY_PREVIOUS` is the key that encrypted it, or reconnect that bank |
 | `rotate-tokens` returns 500 `ENCRYPTION_KEY…` | A key variable is missing or not 32 bytes (the message names the variable, never its value) |
 | Status `LOGIN_REQUIRED` | Normal after a bank password change or expiry: use **Reconnect bank** |

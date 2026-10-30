@@ -29,22 +29,59 @@ enum CategorySection {
 
 enum RuleMatchType {
   EXACT
+  STARTS_WITH
   CONTAINS
   REGEX
 }
 
+enum RuleTarget {
+  NORMALIZED // matched against the normalized merchant key
+  RAW // matched against the bank's raw descriptor
+}
+
+enum RuleDirection {
+  IN
+  OUT
+  ANY
+}
+
+enum RuleSource {
+  SEED // shipped with the app (src/lib/rules/seed.ts)
+  USER // created by a person (or recorded as one, e.g. the owner's confirmed rules)
+}
+
+// NEEDS_REVIEW: an outflow nothing classified, or an unmatched inflow (OTHER_INFLOW) flagged for a look.
+// AUTO: classified by a pair, system rule or rule. REVIEWED: a person categorized it.
+enum ReviewStatus {
+  NEEDS_REVIEW
+  AUTO
+  REVIEWED
+}
+
+// See src/lib/rules/types.ts. There is deliberately no revenue kind: bank inflows are never revenue
+// (revenue comes from Clover). Only EXPENSE and VENDOR_REFUND carry a P&L category.
+// TRANSFER and IGNORE are legacy values from before the categorization engine; nothing writes them.
 enum TransactionKind {
   EXPENSE
   CLOVER_SETTLEMENT
-  TRANSFER
+  CASH_DEPOSIT
+  INTERNAL_TRANSFER
+  CARD_PAYMENT
   OWNER_DRAW
-  IGNORE
+  OWNER_CONTRIBUTION
+  SALES_TAX_REMITTANCE
+  LOAN_PAYMENT
+  VENDOR_REFUND
+  OTHER_INFLOW
+  TRANSFER // legacy
+  IGNORE // legacy
 }
 
 enum CategorySource {
   NONE
-  RULE
-  MANUAL
+  RULE // a rule (or a system rule, which has no Rule row)
+  PAIR // matched with the other side of a transfer / card payment
+  MANUAL // a person chose it: automation never overwrites it
 }
 
 enum SettlementMatchStatus {
@@ -165,37 +202,46 @@ model Category {
 }
 
 model Rule {
-  id             String        @id @default(cuid())
+  id             String          @id @default(cuid())
   businessId     String
-  business       Business      @relation(fields: [businessId], references: [id])
-  pattern        String // compared against BankTransaction.normalizedMerchant
-  matchType      RuleMatchType @default(EXACT)
-  categoryId     String
-  category       Category      @relation(fields: [categoryId], references: [id])
-  priority       Int           @default(100) // lower runs first
-  amountMinCents Int?
+  business       Business        @relation(fields: [businessId], references: [id])
+  key            String          @default(cuid()) // stable identity, e.g. "seed:creamland:purchase"; the upsert key for code-defined rules
+  name           String          @default("")
+  pattern        String // uppercase for EXACT/STARTS_WITH/CONTAINS; a regex source for REGEX
+  matchType      RuleMatchType   @default(EXACT)
+  target         RuleTarget      @default(NORMALIZED)
+  direction      RuleDirection   @default(ANY)
+  accounts       Json? // optional account scope: [{ institution?, mask?, type? }] (any of)
+  amountMinCents Int? // on the absolute amount, inclusive
   amountMaxCents Int?
-  active         Boolean       @default(true)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  kind           TransactionKind @default(EXPENSE)
+  categoryId     String? // required for EXPENSE / VENDOR_REFUND, null for every other kind
+  category       Category?       @relation(fields: [categoryId], references: [id])
+  priority       Int             @default(100) // lower runs first
+  confirmed      Boolean         @default(false) // seeded rules start unconfirmed
+  source         RuleSource      @default(USER)
+  active         Boolean         @default(true)
+  note           String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 
   transactions BankTransaction[]
 
-  @@unique([businessId, matchType, pattern])
+  @@unique([businessId, key])
   @@index([businessId, active, priority])
 }
 
 model BankTransaction {
-  id                   String          @id @default(cuid())
+  id                   String           @id @default(cuid())
   businessId           String
-  business             Business        @relation(fields: [businessId], references: [id])
+  business             Business         @relation(fields: [businessId], references: [id])
   accountId            String
-  account              BankAccount     @relation(fields: [accountId], references: [id])
-  plaidTransactionId   String          @unique
+  account              BankAccount      @relation(fields: [accountId], references: [id])
+  plaidTransactionId   String           @unique
   pendingTransactionId String? // on a posted row: the pending row it replaces
-  pending              Boolean         @default(false)
-  date                 DateTime        @db.Date // Plaid posted/pending date
-  authorizedDate       DateTime?       @db.Date
+  pending              Boolean          @default(false)
+  date                 DateTime         @db.Date // Plaid posted/pending date
+  authorizedDate       DateTime?        @db.Date
   amountCents          Int // positive = money out
   rawDescription       String // Plaid original_description (falls back to name)
   merchantName         String?
@@ -205,15 +251,19 @@ model BankTransaction {
   pfcDetailed          String?
   pfcConfidence        String?
   pfcVersion           String? // taxonomy version Plaid returned (v1 or v2)
-  kind                 TransactionKind @default(EXPENSE)
+  // Classification (written by src/lib/rules/apply.ts; null kind = an outflow nothing has classified yet)
+  kind                 TransactionKind?
   categoryId           String?
-  category             Category?       @relation(fields: [categoryId], references: [id])
-  categorySource       CategorySource  @default(NONE)
+  category             Category?        @relation(fields: [categoryId], references: [id])
+  categorySource       CategorySource   @default(NONE)
   ruleId               String?
-  rule                 Rule?           @relation(fields: [ruleId], references: [id])
+  rule                 Rule?            @relation(fields: [ruleId], references: [id])
+  pairId               String? // both sides of a transfer / card payment share it (the smaller of the two transaction ids)
+  reviewStatus         ReviewStatus     @default(NEEDS_REVIEW)
+  confirmed            Boolean          @default(false) // decided by a confirmed rule, a pair, a system rule or a person
   // Late: dated in an already-locked month. Rolls into the "Prior-month
   // adjustments" line of adjustmentMonth (the open month it was found in).
-  isLate               Boolean         @default(false)
+  isLate               Boolean          @default(false)
   adjustmentMonth      String?
   removedAt            DateTime? // Plaid reported it removed
   supersededAt         DateTime? // a pending row replaced by its posted row
@@ -221,14 +271,16 @@ model BankTransaction {
   // (0 if it arrived after the lock). Contribution to adjustmentMonth's "Prior-month
   // adjustments" line = (removed ? 0 : amountCents) - adjustmentBaseCents.
   adjustmentBaseCents  Int?
-  createdAt            DateTime        @default(now())
-  updatedAt            DateTime        @updatedAt
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
   settlement Settlement?
 
   @@index([businessId, date])
   @@index([businessId, categoryId])
   @@index([businessId, kind, categoryId])
+  @@index([businessId, pairId])
+  @@index([businessId, reviewStatus])
 }
 
 model CloverPayment {

@@ -218,3 +218,15 @@ export function tokenKeyCheck(
   }
   return { name, status: mine.length ? "pass" : "info", message: mine.length ? `${mine.length} token(s) decrypt with the current key${note}` : `none for ${currentEnv}${note}` };
 }
+
+/** Has the rules release run on this database? A warning (not a failure): older deploys predate it. */
+export function rulesReadinessCheck(activeRules: number, backfillAt: Date | null): Check {
+  const name = "rules: classification";
+  if (activeRules === 0) {
+    return { name, status: "warn", message: "no rules stored yet: run the rules release (POST /api/admin/apply-rules); transaction categories are not available until then" };
+  }
+  if (!backfillAt) {
+    return { name, status: "warn", message: `${activeRules} rules stored but the backfill has not run: call POST /api/admin/apply-rules (transaction categories are not trustworthy until then)` };
+  }
+  return { name, status: "pass", message: `${activeRules} active rules; backfill completed ${backfillAt.toISOString().slice(0, 10)}` };
+}

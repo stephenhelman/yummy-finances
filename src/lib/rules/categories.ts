@@ -12,6 +12,10 @@ export const CAT = {
   SOFTWARE: "Software and subscriptions",
   INTEREST: "Interest",
   OTHER_COGS: "Other COGS",
+  BANK_FEES: "Bank fees",
+  PAYROLL_SERVICE: "Payroll service fees",
+  INTERNET_PHONE: "Internet and phone",
+  INSURANCE: "Insurance",
 } as const;
 
 export type Section = "REVENUE" | "COGS" | "OPEX" | "OTHER" | "NON_PL";

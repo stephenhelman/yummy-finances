@@ -41,6 +41,7 @@ export function summarizeSync(result: ManualSyncResult, at: Date, atLabel: strin
         let line = changes === 0 ? `${label}: up to date.` : `${label}: ${c.created} new, ${c.updated} changed, ${c.removed} removed.`;
         if (c.late) line += ` ${c.late} landed in a month that was already closed.`;
         if (c.audited) line += ` ${c.audited} need a look.`;
+      if (r.rulesError) line += " Sorting them into categories failed; it retries on the next sync.";
         lines.push(line);
       }
     });

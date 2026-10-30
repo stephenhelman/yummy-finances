@@ -2,7 +2,9 @@ import "dotenv/config";
 import { PrismaNeon } from "@prisma/adapter-neon";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { isValidTimezone } from "../src/lib/dates";
-import { PLANNED_CATEGORY_CHANGES } from "../src/lib/rules/categories";
+import { ALL_RULES } from "../src/lib/rules/all";
+import { applyCategoryChanges } from "../src/lib/rules/category-store";
+import { persistRules } from "../src/lib/rules/prisma-store";
 
 function required(name: string): string {
   const v = process.env[name];
@@ -72,18 +74,10 @@ async function main() {
     }));
     console.log(`${existing ? "Found" : "Created"} business ${b.id}`);
 
-    // Renames first: the upsert below is keyed by name, so without this a renamed category would be
-    // created anew and the old row (and any transactions already pointing at it) left behind.
-    for (const { from, to } of PLANNED_CATEGORY_CHANGES.renames) {
-      const [old, renamed] = await Promise.all([
-        db.category.findUnique({ where: { businessId_name: { businessId: b.id, name: from } } }),
-        db.category.findUnique({ where: { businessId_name: { businessId: b.id, name: to } } }),
-      ]);
-      if (old && !renamed) {
-        await db.category.update({ where: { id: old.id }, data: { name: to } });
-        console.log(`Renamed category "${from}" to "${to}"`);
-      }
-    }
+    // Renames first: the upsert below is keyed by name, so without this a renamed category would be created
+    // anew and the old row (and any transactions already pointing at it) left behind.
+    const changes = await applyCategoryChanges(db, b.id);
+    if (changes.renamed) console.log(`Renamed ${changes.renamed} category(ies) per the planned changes`);
 
     let order = 0;
     for (const [section, names] of CATEGORIES) {
@@ -96,6 +90,10 @@ async function main() {
       }
     }
     console.log(`Categories ensured: ${order}`);
+
+    // Persist the seed rules and the owner's confirmed rules. A person's confirmations on existing rules are kept.
+    const rules = await persistRules(db, b.id, ALL_RULES);
+    console.log(`Rules: ${rules.created} created, ${rules.updated} updated, ${rules.unchanged} unchanged (${ALL_RULES.length} defined)`);
   } finally {
     await db.$disconnect();
   }
