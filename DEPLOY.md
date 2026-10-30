@@ -108,7 +108,7 @@ npx prisma db seed
 unset PROD_DIRECT_URL
 ```
 
-Expected output: `Created business …` and `Categories ensured: 31`.
+Expected output: `Created business …` and `Categories ensured: 32`.
 
 ## 4. Deploy
 

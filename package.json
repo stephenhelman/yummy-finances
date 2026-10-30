@@ -17,7 +17,7 @@
     "test:utils": "tsx scripts/test-utils.ts",
     "test:auth": "tsx scripts/test-auth.ts",
     "test:migrations": "tsx scripts/test-migrations.ts",
-    "test": "npm run test:crypto && npm run test:utils && npm run test:auth && npm run test:migrations && npm run test:clover && npm run test:clover-map && npm run test:revenue && npm run test:plaid && npm run test:plaid-sync && npm run test:preflight && npm run test:ui && npm run test:rotation",
+    "test": "npm run test:crypto && npm run test:utils && npm run test:auth && npm run test:migrations && npm run test:clover && npm run test:clover-map && npm run test:revenue && npm run test:plaid && npm run test:plaid-sync && npm run test:preflight && npm run test:ui && npm run test:rotation && npm run test:rules",
     "test:clover": "tsx scripts/test-clover.ts",
     "probe:clover": "tsx scripts/clover-probe.ts",
     "sync:clover": "tsx scripts/sync-clover.ts",
@@ -40,7 +40,10 @@
     "plaid:sandbox-oauth": "tsx scripts/plaid-sandbox-oauth.ts",
     "analyze:merchants": "tsx scripts/analyze-merchants.ts",
     "test:rotation": "tsx scripts/test-rotation.ts",
-    "rehearse:rotation": "tsx scripts/rehearse-rotation.ts"
+    "rehearse:rotation": "tsx scripts/rehearse-rotation.ts",
+    "rules:dry-run": "tsx scripts/rules-dry-run.ts",
+    "test:rules": "tsx scripts/test-rules.ts",
+    "zelle:recipients": "tsx scripts/zelle-recipients.ts"
   },
   "dependencies": {
     "@prisma/adapter-neon": "7.10.1",

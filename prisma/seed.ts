@@ -2,6 +2,7 @@ import "dotenv/config";
 import { PrismaNeon } from "@prisma/adapter-neon";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { isValidTimezone } from "../src/lib/dates";
+import { PLANNED_CATEGORY_CHANGES } from "../src/lib/rules/categories";
 
 function required(name: string): string {
   const v = process.env[name];
@@ -15,7 +16,7 @@ type Section = "REVENUE" | "COGS" | "OPEX" | "OTHER" | "NON_PL";
 // Order here is the order on the P&L within each section.
 const CATEGORIES: [Section, string[]][] = [
   ["REVENUE", ["Uncategorized income"]],
-  ["COGS", ["Ingredients and dairy", "Cones, cups and packaging", "Other COGS"]],
+  ["COGS", ["Dairy & ingredients", "Candy & toppings", "Cones, cups and packaging", "Other COGS"]],
   [
     "OPEX",
     [
@@ -70,6 +71,19 @@ async function main() {
       },
     }));
     console.log(`${existing ? "Found" : "Created"} business ${b.id}`);
+
+    // Renames first: the upsert below is keyed by name, so without this a renamed category would be
+    // created anew and the old row (and any transactions already pointing at it) left behind.
+    for (const { from, to } of PLANNED_CATEGORY_CHANGES.renames) {
+      const [old, renamed] = await Promise.all([
+        db.category.findUnique({ where: { businessId_name: { businessId: b.id, name: from } } }),
+        db.category.findUnique({ where: { businessId_name: { businessId: b.id, name: to } } }),
+      ]);
+      if (old && !renamed) {
+        await db.category.update({ where: { id: old.id }, data: { name: to } });
+        console.log(`Renamed category "${from}" to "${to}"`);
+      }
+    }
 
     let order = 0;
     for (const [section, names] of CATEGORIES) {
