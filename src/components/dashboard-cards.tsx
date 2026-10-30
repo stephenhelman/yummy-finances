@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ConnectButton } from "@/app/admin/connections/connect-button";
-import { bankNeedsAttention, checkClover, hasSales, type BankCardState, type BankSummary } from "@/lib/dashboard";
+import { bankNeedsAttention, checkClover, hasSales, type BankCardState, type BankSummary, type ReviewCardData } from "@/lib/dashboard";
 import { LOCAL_SALES_TAX_RATE_LABEL, formatDateTime, monthLabel, percent } from "@/lib/format";
 import { formatCents } from "@/lib/money";
 import type { RevenueResult } from "@/lib/revenue";
@@ -150,6 +150,34 @@ export function TaxNote({ months }: { months: RevenueResult[] }) {
         </p>
       ))}
       <p>Ask your accountant to review your Clover tax settings.</p>
+    </section>
+  );
+}
+
+export function ReviewCard({ data }: { data: ReviewCardData }) {
+  if (data.kind === "pending") {
+    return (
+      <section className="card" aria-labelledby="review-h">
+        <div className="card-title">
+          <h2 id="review-h">To review</h2>
+          <span className="badge badge-neutral">Not ready</span>
+        </div>
+        <p className="muted">Transactions haven&rsquo;t been categorized yet.</p>
+      </section>
+    );
+  }
+  const backlog = data.yearCount - data.monthCount;
+  return (
+    <section className="card" aria-labelledby="review-h">
+      <div className="card-title">
+        <h2 id="review-h">To review</h2>
+        <span className={`badge ${data.yearCount === 0 ? "badge-ok" : "badge-warn"}`}>{data.yearCount === 0 ? "All clear" : `${data.yearCount} in ${data.year}`}</span>
+      </div>
+      <dl className="kv">
+        <div className="kv-main"><dt>{monthLabel(data.month, true)}</dt><dd>{data.monthCount} <span className="small muted">({formatCents(data.monthCents)})</span></dd></div>
+        <div><dt>Earlier in {data.year}</dt><dd>{backlog}</dd></div>
+      </dl>
+      <Link href={`/admin/review?month=${data.month}`} className="btn btn-primary">{data.yearCount === 0 ? "Open review" : "Start reviewing"}</Link>
     </section>
   );
 }

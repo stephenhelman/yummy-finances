@@ -82,17 +82,17 @@ From your machine, in the repo, with Node 22. The production **direct** (non-poo
 ```bash
 read -rs PROD_DIRECT_URL        # paste the PRODUCTION direct URL, press Enter
 
-DIRECT_URL="$PROD_DIRECT_URL" npm run db:status -- --target prod
+DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run db:status -- --target prod
 ```
 
 Read the `Endpoint:` line it prints and confirm it is the **production** endpoint for **this** app (not dev, `ep-shy-wave-…`, and not any other project). If it says `REFUSED`, stop; nothing ran.
-The shell variable overrides `.env`, so your dev URL is not used.
+The shell variables override `.env`, so your dev URL is not used. `DATABASE_URL` is set too because the guard also refuses when it points at a different endpoint than `DIRECT_URL` (the migration itself only uses `DIRECT_URL`).
 
 Expected: some migrations already applied (the first three went to this branch early on), the rest pending. Then:
 
 ```bash
-DIRECT_URL="$PROD_DIRECT_URL" npm run db:deploy -- --target prod
-DIRECT_URL="$PROD_DIRECT_URL" npm run db:status -- --target prod    # "Database schema is up to date!"
+DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run db:deploy -- --target prod
+DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run db:status -- --target prod    # "Database schema is up to date!"
 ```
 
 `npm run predeploy -- --target prod` runs the check alone.
@@ -185,8 +185,8 @@ Use this whenever the rules or categories change (a new rule, a category rename)
 
 1. **Migrate production** (from your machine, as in step 2):
    ```bash
-   DIRECT_URL="$PROD_DIRECT_URL" npm run db:deploy -- --target prod
-   DIRECT_URL="$PROD_DIRECT_URL" npm run db:status -- --target prod      # "Database schema is up to date!"
+   DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run db:deploy -- --target prod
+   DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run db:status -- --target prod      # "Database schema is up to date!"
    ```
    Do this **before** pushing: the new code expects the new columns.
 2. **Push** (or `vercel --prod`).

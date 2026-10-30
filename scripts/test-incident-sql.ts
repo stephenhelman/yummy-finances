@@ -15,8 +15,10 @@ const cleanup = read("incident/cleanup-reiblast.sql");
 // What actually ran before the failure: everything up to the failing CREATE TABLE "JobRun".
 const ran2 = m2.slice(0, m2.indexOf('CREATE TABLE "JobRun"'));
 
+const opened: PGlite[] = [];
 async function reiblast(opts: { applyYummy: boolean; migrationRows?: boolean } = { applyYummy: true }) {
   const db = new PGlite();
+  opened.push(db);
   await db.exec(`
     CREATE TABLE _prisma_migrations (id varchar(36) PRIMARY KEY, checksum varchar(64) NOT NULL,
       finished_at timestamptz, migration_name varchar(255) NOT NULL, logs text, rolled_back_at timestamptz,
@@ -111,4 +113,6 @@ async function main() {
   assert.ok(!/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE)\b/i.test(inspect.split("\n").filter((l) => !l.trim().startsWith("--")).join("\n").replace(/ARRAY\[[^\]]*\]/g, "")), "inspect has no writes");
   console.log("ok G: static checks");
 }
-main().catch((e) => { console.error(e); process.exit(1); });
+main()
+  .catch((e) => { console.error(e); process.exitCode = 1; })
+  .finally(async () => { await Promise.allSettled(opened.map((d) => d.close())); });

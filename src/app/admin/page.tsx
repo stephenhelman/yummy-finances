@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import { BankCard, CloverCard, CloverCardSkeleton, RevenueCard, TaxNote } from "@/components/dashboard-cards";
+import { BankCard, CloverCard, CloverCardSkeleton, RevenueCard, ReviewCard, TaxNote } from "@/components/dashboard-cards";
 import { getBusiness, requireAdmin } from "@/lib/auth";
-import { loadDashboard } from "@/lib/dashboard";
+import { loadDashboard, loadReviewCard } from "@/lib/dashboard";
 import { dayOfMonth, monthLabel } from "@/lib/format";
 import { getLastCloverSyncAt } from "@/lib/sync-now";
 import { SyncNowButton } from "./connections/sync-now-button";
@@ -14,6 +14,7 @@ export default async function Dashboard() {
   const business = await getBusiness();
   const now = new Date();
   const [d, cloverSyncedAt] = await Promise.all([loadDashboard(business, now), getLastCloverSyncAt(business.id)]);
+  const review = await loadReviewCard(business, d.currentMonth);
 
   const today = dayOfMonth(now, business.timezone);
   const curName = monthLabel(d.currentMonth);
@@ -28,6 +29,8 @@ export default async function Dashboard() {
         </Suspense>
         <BankCard bank={d.bank} timezone={business.timezone} />
       </div>
+
+      <ReviewCard data={review} />
 
       <TaxNote months={[d.current, d.previous]} />
 

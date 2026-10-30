@@ -6,6 +6,9 @@ import { resolvePlaidEnv } from "@/lib/plaid-config";
 import type { ItemStatus } from "@/lib/plaid-health";
 import { loadMonthRevenue } from "@/lib/revenue-db";
 import type { RevenueResult } from "@/lib/revenue";
+import { classificationIsReady } from "@/lib/review/gate";
+import { loadTxnViews } from "@/lib/review/queries";
+import { queueSince, reviewQueue, reviewSummary } from "@/lib/review/view";
 import { getLastSyncSummary } from "@/lib/sync-now";
 
 type Business = { id: string; timezone: string };
@@ -86,3 +89,13 @@ export async function loadDashboard(business: Business, now = new Date()): Promi
 }
 
 export const hasSales = (r: RevenueResult) => r.counts.payments.total + r.counts.refunds.total > 0;
+
+export type ReviewCardData = { kind: "pending" } | { kind: "ready"; month: string; year: string; monthCount: number; monthCents: number; yearCount: number };
+
+/** The "To review" numbers: this month's queue and the year's backlog. Goes through the classification gate. */
+export async function loadReviewCard(business: Business, month: string): Promise<ReviewCardData> {
+  if (!(await classificationIsReady(business.id))) return { kind: "pending" };
+  const queue = reviewQueue(await loadTxnViews(db, business.id, { reviewOnly: true }), queueSince(month));
+  const year = month.slice(0, 4);
+  return { kind: "ready", month, year, ...reviewSummary(queue, month, year) };
+}
