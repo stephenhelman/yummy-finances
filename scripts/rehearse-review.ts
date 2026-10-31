@@ -40,9 +40,12 @@ async function main() {
       must(badge === queue.length, "badge count equals the review queue");
 
       const supplies = cats.find((c) => c.key === "materials-and-supplies")!;
-      const target = queue.find((t) => t.direction === "out" && !t.isCheck);
-      if (!target) throw new Error("no non-check outflow in the review queue to rehearse with");
-      const check = queue.find((t) => t.isCheck);
+      // the review queue may be empty (a finished review): any editable, non-MANUAL transaction works for a rehearsal
+      const everything = queue.length ? [] : await loadTxnViews(tx, business.id, { month: since.slice(0, 4) + "-" + currentMonth(new Date(), business.timezone).slice(5) });
+      const pool = [...queue, ...everything].filter((t) => !t.locked && t.categorySource !== "MANUAL");
+      const target = pool.find((t) => t.direction === "out" && !t.isCheck);
+      if (!target) throw new Error("no editable non-check outflow to rehearse with");
+      const check = pool.find((t) => t.isCheck);
 
       const before = await fingerprint();
       const res = await classifyManually(store, { txnId: target.id, value: `cat:${supplies.id}`, always: true });

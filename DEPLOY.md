@@ -97,17 +97,13 @@ DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run db:status 
 
 `npm run predeploy -- --target prod` runs the check alone.
 
-## 2b. Category template (after the template migration)
+## 2b. Category template: production does NOT use `categories:seed`
 
-The accountant's P&L template (groups, categories, quick picks) is data. After `db:deploy` has applied `20261031000000_category_template`, write it once per database:
+On **production** the template and the move of your old categories into it happen in **one step**: the [Rules release](#rules-release) (the `apply-rules` call) seeds the template, stores the rules with their template categories, moves legacy categories on rules and on your own picks to the equivalent template line, re-sorts the rest, and only then writes its "backfill complete" marker. Production therefore never sits with old categories archived and nothing mapped. `npm run categories:seed` refuses `--target prod` for this reason; it exists for dev.
 
-```bash
-DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run categories:seed -- --target prod
-```
+After the release, pull Clover orders (they carry the discounts): `npm run sync:clover -- --month=YYYY-MM` for the current month, and for each earlier month you want discounts for (each run covers that month and the two before it). A paid order with no stored detail shows as a warning on the report instead of being silently left out.
 
-It refuses unless the endpoint matches the allowlist, is safe to repeat, and never overwrites later edits to names, groups, order or quick picks. Old categories that aren't part of the template are archived (not pickable) and grouped under "Unmapped (legacy)"; they keep their transactions and still appear on a report while they hold money. Nothing is moved until the mapping is reviewed and applied.
-
-Then pull the last months of Clover orders (they carry the discounts): `npm run sync:clover -- --month=YYYY-MM` for the current month, and for each earlier month you want discounts for (each run covers that month and the two before it). A paid order with no stored detail shows as a warning on the report instead of being silently left out.
+Before the first production release, read the proposal for the data you actually have: `npm run propose:mapping -- --target dev` (read-only; it writes `probe-output/category-mapping-proposal.md`).
 
 ## 3. Seed production
 
@@ -213,17 +209,21 @@ Use this whenever the rules or categories change (a new rule, a category rename)
 5. **Check the summary** in the response (counts only). On the first run expect:
    - `"ok": true`, `"alreadyUpToDate": false`
    - `categories`: `renamed` 1 (the old name becomes "Dairy & ingredients") and `added` 1 ("Candy & toppings")
+   - `template`: `groups` 4, `created` about 35, `adopted` 2 (Rent and Utilities keep their rows), `legacyArchived` equal to the old categories not in the template
    - `rules`: `created` 57, `total` 57
+   - `mapping`: `rulesMoved` and `manualMoved` match the proposal for your data (`npm run propose:mapping`); `manualSkippedLocked` 0 until a month is locked
    - `applied`: `changed` equal to `considered` (every row is categorized the first time), `skippedLocked` 0 (no month is locked yet), `legacyCleared` equal to the leftover default kinds
    - `summary.autoClassifiedPct` and `pnlClassifiedPct`: the share of outflow dollars sorted automatically. These depend on the real data; large drops from what you saw on dev mean something is off.
 6. **Call it a second time**: it must report `"alreadyUpToDate": true` and zero changes.
 7. **Run the preflight** (step 5). `rules: classification` should say **PASS** (rules stored, backfill completed). It is a **WARN** until the release has run.
 
-What it does, in order (and stops at the first failure, leaving nothing half-done): applies the planned category changes (a rename keeps the same row, so nothing already linked to it is lost), stores the rules, categorizes every transaction, then writes a "backfill complete" marker. It never un-confirms or re-enables a rule that already exists, never overwrites a transaction a person categorized, and never touches a month that has been locked.
+What it does, in order (and stops at the first failure, leaving nothing half-done): applies the planned category changes (a rename keeps the same row, so nothing already linked to it is lost), **seeds the category template** (groups and categories; archives the old ones without moving data), stores the rules (written with their template categories), **maps** legacy categories on rules and on people's own MANUAL picks to the equivalent template line (picks stay MANUAL), categorizes every transaction, then writes a "backfill complete" marker. It never un-confirms or re-enables a rule that already exists, never overwrites a transaction a person categorized except to move a MANUAL pick to the equivalent category, never moves a row in a month that has been locked, and never re-points a rule or pick that already sits on a template category (a decision someone made later).
+
+The template seed and the mapping are part of this one call on purpose: if the call fails or times out before the marker, call it again. It is safe to repeat at any point.
 
 **Until it has run, nothing reads categories.** Transaction categories are marked "pending" until the release has completed: the marker is what `classificationReady` / `requireClassification` check, and a test fails if new code reads transactions without using them.
 
-Rehearse it any time on dev with `npm run rehearse:release`: it resets dev to the "just migrated" state inside a transaction that is always rolled back, runs the release twice, and prints the counts.
+Rehearse it any time on dev with `npm run rehearse:release`, and rehearse the category part with `npm run rehearse:category-release`: it rewinds dev to production's state right after `db:deploy` (no template, old categories live), adds a locked month, runs the whole release twice inside a transaction that is always rolled back, and checks idempotence, that every MANUAL pick stayed MANUAL, and that the locked month's rows are untouched.
 
 If it fails: a message starting with `Category` or `Rule` names the problem (for example a rule that refers to a category that does not exist); anything else is "rules release failed" and the details are in the Vercel function log. A `409 already_running` means another call is in progress (a crashed call frees itself after 15 minutes).
 

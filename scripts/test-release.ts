@@ -20,7 +20,9 @@ const rows: SummaryRow[] = [
 function deps(log: string[], over: Partial<ReleaseDeps> = {}): ReleaseDeps {
   return {
     applyCategoryChanges: async () => { log.push("categories"); return { renamed: 0, added: 0 }; },
+    seedTemplate: async () => { log.push("template"); return { groups: 0, created: 0, adopted: 0, unchanged: 37, legacyArchived: 0 }; },
     persistRules: async () => { log.push("persist"); return { created: 0, updated: 0, unchanged: 57, total: 57 }; },
+    applyMapping: async () => { log.push("mapping"); return { rulesMoved: 0, manualMoved: 0, manualSkippedLocked: 0 }; },
     applyRules: async () => { log.push("apply"); return zeroApply; },
     loadSummaryRows: async () => { log.push("summary"); return rows; },
     markComplete: async () => { log.push("marker"); },
@@ -44,7 +46,7 @@ async function main() {
       persistRules: async () => { log.push("persist"); return { created: 57, updated: 0, unchanged: 0, total: 57 }; },
       applyRules: async () => { log.push("apply"); return { ...zeroApply, changed: 10, unchanged: 0, legacyCleared: 2 }; },
     }));
-    assert.deepEqual(log, ["categories", "persist", "apply", "summary", "marker"], "the one safe order, marker last");
+    assert.deepEqual(log, ["categories", "template", "persist", "mapping", "apply", "summary", "marker"], "the one safe order: seed and mapping back to back, marker last");
     assert.equal(first.alreadyUpToDate, false);
     assert.deepEqual(first.categories, { renamed: 1, added: 1 });
     assert.deepEqual(first.rules, { created: 57, updated: 0, unchanged: 0, total: 57 });
@@ -57,6 +59,18 @@ async function main() {
     onlyCounts(second);
     // a rules-only change makes it not a no-op
     assert.equal((await runRulesRelease(deps([], { persistRules: async () => ({ created: 0, updated: 1, unchanged: 56, total: 57 }) }))).alreadyUpToDate, false);
+    // the template seed and the mapping count as changes too: a release that only seeded or only mapped is not a no-op
+    assert.equal((await runRulesRelease(deps([], { seedTemplate: async () => ({ groups: 5, created: 35, adopted: 2, unchanged: 0, legacyArchived: 30 }) }))).alreadyUpToDate, false);
+    assert.equal((await runRulesRelease(deps([], { applyMapping: async () => ({ rulesMoved: 3, manualMoved: 0, manualSkippedLocked: 0 }) }))).alreadyUpToDate, false);
+    assert.equal((await runRulesRelease(deps([], { applyMapping: async () => ({ rulesMoved: 0, manualMoved: 12, manualSkippedLocked: 0 }) }))).alreadyUpToDate, false);
+    // if the template seed fails nothing after it runs and no marker is written (prod never sits half-way)
+    const halted: string[] = [];
+    await assert.rejects(runRulesRelease(deps(halted, { seedTemplate: async () => { halted.push("template"); throw new Error("boom"); } })), /boom/);
+    assert.deepEqual(halted, ["categories", "template"], "stops at the failure: no persist, no mapping, no marker");
+    // a mapping failure leaves no marker either
+    const halted2: string[] = [];
+    await assert.rejects(runRulesRelease(deps(halted2, { applyMapping: async () => { halted2.push("mapping"); throw new Error("no template"); } })), /no template/);
+    assert.ok(!halted2.includes("marker") && !halted2.includes("apply"));
 
     // summary numbers from the stored rows
     const s = summarize(rows, ["2026-05", "2026-06"]);
@@ -75,7 +89,7 @@ async function main() {
   {
     const log: string[] = [];
     await assert.rejects(runRulesRelease(deps(log, { persistRules: async () => { log.push("persist"); throw new Error('Rule seed:x: category "Nope" does not exist'); } })), /does not exist/);
-    assert.deepEqual(log, ["categories", "persist"], "nothing after a failed persist: no apply, no marker");
+    assert.deepEqual(log, ["categories", "template", "persist"], "nothing after a failed persist: no apply, no marker");
     const log2: string[] = [];
     await assert.rejects(runRulesRelease(deps(log2, { applyRules: async () => { log2.push("apply"); throw new Error("db down"); } })), /db down/);
     assert.ok(!log2.includes("marker"), "no marker when the apply failed");
@@ -166,8 +180,9 @@ async function main() {
 
   // ===== guard: new code that reads transactions must check readiness (or be a known writer of classification) =====
   {
-    // the rules engine itself (src/lib/rules/) and the sync (which only writes raw rows) are the known accessors
-    const allowed = (rel: string) => rel.startsWith("src/lib/rules/") || rel === "src/lib/plaid/sync.ts";
+    // the rules engine itself (src/lib/rules/), the sync (which only writes raw rows) and the category mapping (a step OF the rules
+    // release: it writes classification, and runs before the "backfill complete" marker exists) are the known accessors
+    const allowed = (rel: string) => rel.startsWith("src/lib/rules/") || rel === "src/lib/plaid/sync.ts" || rel === "src/lib/report/mapping-store.ts";
     const walk = (dir: string): string[] => readdirSync(dir).flatMap((f) => { const p = join(dir, f); return statSync(p).isDirectory() ? (f === "generated" || f === "node_modules" ? [] : walk(p)) : /\.(ts|tsx)$/.test(f) ? [p] : []; });
     const offenders = walk(join(process.cwd(), "src"))
       .map((p) => ({ rel: relative(process.cwd(), p), text: readFileSync(p, "utf8") }))

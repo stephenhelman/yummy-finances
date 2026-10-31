@@ -5,7 +5,9 @@ import { claimLock, releaseLock } from "@/lib/job-lock";
 import { prismaReleaseDeps, runRulesRelease } from "@/lib/rules/release";
 
 // The rules release, run inside the deployed environment so production credentials never leave Vercel:
-// planned category changes -> persist the rules -> categorize every transaction -> write the backfill marker.
+// planned category changes -> seed the category template -> persist the rules (template categories) -> map legacy categories
+// (rules and people's MANUAL picks, which stay MANUAL) -> categorize every transaction -> write the backfill marker.
+// Seed and mapping are one call on purpose: production never sits with old categories archived and nothing mapped.
 // Auth: `Authorization: Bearer $CRON_SECRET`. Idempotent: calling it twice is safe (the second call changes nothing).
 // Never un-confirms or re-enables an existing rule, never overwrites manual categorizations, never touches
 // locked months. Response: counts only (no descriptors, ids or tokens).

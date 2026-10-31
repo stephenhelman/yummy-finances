@@ -9,6 +9,7 @@ import { db } from "../src/lib/db";
 import { applyRules, type StoredTxn } from "../src/lib/rules/apply";
 import { classify } from "../src/lib/rules/engine";
 import { ALL_RULES } from "../src/lib/rules/all";
+import { mapDef } from "../src/lib/report/mapping";
 import { prismaRulesStore } from "../src/lib/rules/prisma-store";
 import { markBackfillComplete } from "../src/lib/rules/readiness";
 import { summarize, summaryLines, type SummaryRow } from "../src/lib/rules/summary";
@@ -34,7 +35,7 @@ async function run(client: Client, businessId: string, rehearse: boolean) {
   for (const line of summaryLines(summarize(rows))) console.log("  " + line);
 
   // stored vs a fresh classification with the rules defined in code (this is the dry-run result)
-  const fresh = new Map(classify(stored.filter((t) => t.categorySource !== "MANUAL").map((t) => ({ id: t.id, date: t.date, amountCents: t.amountCents, raw: t.raw, pfcPrimary: t.pfcPrimary, pfcDetailed: t.pfcDetailed, account: t.account })), ALL_RULES).map((d) => [d.txnId, d]));
+  const fresh = new Map(classify(stored.filter((t) => t.categorySource !== "MANUAL").map((t) => ({ id: t.id, date: t.date, amountCents: t.amountCents, raw: t.raw, pfcPrimary: t.pfcPrimary, pfcDetailed: t.pfcDetailed, account: t.account })), ALL_RULES.map(mapDef)).map((d) => [d.txnId, d]));
   const diffs: string[] = [];
   let compared = 0;
   for (const t of stored) {
