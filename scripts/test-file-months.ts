@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { hashReport, type CloseDeps, type Snapshot } from "../src/lib/report/close-month";
+import { hashReport, type Snapshot } from "../src/lib/report/close-month";
 import { MAX_FILE_MONTHS, fileMonths, monthRange, problemsFor, type FileDeps } from "../src/lib/report/file-months";
 import { buildReport, type ReportCategory, type ReportTxn } from "../src/lib/report/pnl";
 import { GROUP_ORDER, TEMPLATE } from "../src/lib/report/template";
