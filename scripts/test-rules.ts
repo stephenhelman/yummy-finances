@@ -108,7 +108,7 @@ const one = (t: TxnInput, rules: RuleDef[] = SEED_RULES) => classify([t], rules,
   const r = (o: Partial<RuleDef>): RuleDef => ({ id: "r", name: "r", pattern: "X", matchType: "STARTS_WITH", target: "normalized", direction: "out", kind: "EXPENSE", categoryName: "Supplies", priority: 1, confirmed: false, source: "USER", ...o });
   assert.deepEqual(validateRule(r({})), []);
   assert.match(validateRule(r({ categoryName: undefined }))[0], /needs a category/);
-  assert.match(validateRule(r({ kind: "OWNER_DRAW", categoryName: "Supplies" }))[0], /must not have a category/);
+  assert.deepEqual(validateRule(r({ kind: "OWNER_DRAW", categoryName: "Personal: Misc" })), [], "a non-P&L kind may name its report line");
   assert.match(validateRule(r({ kind: "CLOVER_SETTLEMENT", direction: "in", categoryName: "Supplies" }))[0], /must not have a category/);
   assert.ok(validateRule(r({ kind: "EXPENSE", direction: "in" })).some((e) => /only applies to outflows/.test(e)), "an expense can never be an inflow");
   assert.ok(validateRule(r({ kind: "VENDOR_REFUND", direction: "out" })).some((e) => /only applies to inflows/.test(e)));
@@ -121,7 +121,9 @@ const one = (t: TxnInput, rules: RuleDef[] = SEED_RULES) => classify([t], rules,
   // there is no revenue kind, and only these two kinds touch the P&L
   assert.ok(!(KINDS as readonly string[]).includes("REVENUE") && !(KINDS as readonly string[]).includes("INCOME"));
   assert.deepEqual([...PNL_KINDS].sort(), ["EXPENSE", "VENDOR_REFUND"]);
-  assert.equal(KINDS.length, 11);
+  assert.equal(KINDS.length, 13);
+  // OTHER_INCOME exists only for a person's manual pick of an income category: not a P&L kind to the engine, and no rule may produce it
+  assert.ok((KINDS as readonly string[]).includes("OTHER_INCOME") && !PNL_KINDS.has("OTHER_INCOME"));
 }
 
 // ===== 3. engine semantics ===============================================================================

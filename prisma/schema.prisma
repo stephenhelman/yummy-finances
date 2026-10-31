@@ -27,6 +27,16 @@ enum CategorySection {
   NON_PL // sales tax, tips, owner draws, loan principal, capex, transfers
 }
 
+// How a category is reported. The owner only ever picks a category; the internal kind is derived from this
+// (see src/lib/report/template.ts: PNL_EXPENSE -> EXPENSE / VENDOR_REFUND, PERSONAL -> OWNER_DRAW / OWNER_CONTRIBUTION,
+// NON_PL -> the category's nonPlKind, PNL_INCOME -> OTHER_INCOME).
+enum CategoryTreatment {
+  PNL_EXPENSE
+  PNL_INCOME
+  NON_PL
+  PERSONAL
+}
+
 enum RuleMatchType {
   EXACT
   STARTS_WITH
@@ -73,6 +83,8 @@ enum TransactionKind {
   LOAN_PAYMENT
   VENDOR_REFUND
   OTHER_INFLOW
+  DONATION // a donation: outside the P&L, and not an owner draw (so it never inflates owner-draw totals)
+  OTHER_INCOME // the one bank-sourced P&L income: a person picked an "Other Income" category on an inflow (never a rule)
   TRANSFER // legacy
   IGNORE // legacy
 }
@@ -112,6 +124,9 @@ model Business {
   name                 String
   timezone             String
   fiscalYearStartMonth Int      @default(1)
+  // false: Total Sales excludes sales tax and the Sales Tax category stays outside the P&L (cash notes show collected vs
+  // remitted). true: Total Sales includes tax collected and Sales Tax is a P&L expense line. Net income is the same either way.
+  salesTaxInRevenue    Boolean  @default(false)
   ownerEmail           String
   ccEmail              String?
   createdAt            DateTime @default(now())
@@ -130,6 +145,8 @@ model Business {
   jobRuns        JobRun[]
   auditLogs      AuditLog[]
   cloverTenders  CloverTender[]
+  cloverOrders   CloverOrder[]
+  categoryGroups CategoryGroup[]
 }
 
 model PlaidItem {
@@ -183,22 +200,53 @@ model BankAccount {
   @@index([businessId])
 }
 
-model Category {
-  id         String          @id @default(cuid())
+// An editable, ordered list of report groups ("Sales/Food", "Other Direct Selling", "Other", "Personal"). A category with no
+// group is a top-level line (Wages and Benefits, Rent).
+model CategoryGroup {
+  id         String   @id @default(cuid())
   businessId String
-  business   Business        @relation(fields: [businessId], references: [id])
+  business   Business @relation(fields: [businessId], references: [id])
   name       String
-  section    CategorySection
-  sortOrder  Int             @default(0)
-  isSystem   Boolean         @default(false)
-  createdAt  DateTime        @default(now())
-  updatedAt  DateTime        @updatedAt
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  categories Category[]
+
+  @@unique([businessId, name])
+  @@index([businessId, sortOrder])
+}
+
+// The report is data-driven from these rows: every non-archived category shows on the accountant's template in
+// (group, sortOrder) order, even at $0 unless showWhenZero is off.
+model Category {
+  id             String            @id @default(cuid())
+  businessId     String
+  business       Business          @relation(fields: [businessId], references: [id])
+  name           String
+  // DEPRECATED: the old P&L section. Kept so existing code keeps working; new code reads treatment/group. Set from
+  // treatment when a category is created (PNL_EXPENSE -> OPEX, PNL_INCOME -> REVENUE, NON_PL / PERSONAL -> NON_PL).
+  section        CategorySection
+  key            String? // stable code for template lines the app treats specially ("wages", "sales-tax", ...); survives renames
+  groupId        String?
+  group          CategoryGroup?    @relation(fields: [groupId], references: [id])
+  treatment      CategoryTreatment @default(PNL_EXPENSE)
+  nonPlKind      TransactionKind? // NON_PL only: the kind a manual pick derives (Payments -> CARD_PAYMENT, Other Transfers -> INTERNAL_TRANSFER, ...)
+  showWhenZero   Boolean           @default(true)
+  archived       Boolean           @default(false)
+  quickPickOrder Int? // set = one of the Review quick picks, ascending
+  sortOrder      Int               @default(0)
+  isSystem       Boolean           @default(false)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
 
   rules        Rule[]
   transactions BankTransaction[]
 
   @@unique([businessId, name])
+  @@unique([businessId, key])
   @@index([businessId, section])
+  @@index([businessId, groupId, sortOrder])
 }
 
 model Rule {
@@ -358,6 +406,28 @@ model CloverTender {
   updatedAt  DateTime @updatedAt
 
   @@unique([businessId, cloverId])
+}
+
+// One row per Clover order, kept only to report discounts (orders are fetched with expand=discounts,lineItems,modifications).
+// subtotalCents is the pre-discount subtotal: Σ(line price + modifier amounts), verified on live data to equal what was
+// paid before tax on undiscounted orders. The discount of an order is subtotalCents minus what its SUCCESS payments paid
+// before tax; the report computes it at read time from CloverPayment, so the two can never disagree.
+model CloverOrder {
+  id                String    @id @default(cuid())
+  businessId        String
+  business          Business  @relation(fields: [businessId], references: [id])
+  cloverId          String
+  createdTime       DateTime
+  clientCreatedTime DateTime?
+  subtotalCents     Int
+  hasDiscount       Boolean   @default(false)
+  discountNames     Json? // ["Cash Discount", "Rewards 5%"]: names and percentages only
+  testMode          Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([businessId, cloverId])
+  @@index([businessId, createdTime])
 }
 
 model Settlement {

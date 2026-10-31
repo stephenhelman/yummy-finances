@@ -155,7 +155,7 @@ export const kindLabel = (k: Kind | null): string =>
     : ({
         EXPENSE: "Expense", CLOVER_SETTLEMENT: "Clover deposit", CASH_DEPOSIT: "Cash deposit", INTERNAL_TRANSFER: "Internal transfer", CARD_PAYMENT: "Card payment",
         OWNER_DRAW: "Personal (owner draw)", OWNER_CONTRIBUTION: "Personal (owner contribution)", SALES_TAX_REMITTANCE: "Sales tax", LOAN_PAYMENT: "Loan payment",
-        VENDOR_REFUND: "Vendor refund", OTHER_INFLOW: "Other inflow",
+        VENDOR_REFUND: "Vendor refund", OTHER_INFLOW: "Other inflow", OTHER_INCOME: "Other income", DONATION: "Donation",
       } as Record<Kind, string>)[k];
 
 /** The chip text for a row: category for P&L kinds, otherwise the kind. */

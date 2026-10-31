@@ -11,7 +11,6 @@
 
 var BRAND = 'Yummy Finances';
 var MONTH_TAB_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
-var SECTION_ORDER = ['REVENUE', 'COGS', 'OPEX', 'OTHER'];
 var EMAIL_RE = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
 
 function doPost(e) {
@@ -89,10 +88,11 @@ function handleLoginEmail_(req) {
 // ------------------------------------------------------------- monthly_report
 
 /**
- * Payload (amounts are integer cents):
- *  sections: [{key:'REVENUE'|'COGS'|'OPEX'|'OTHER', label, subtotalCents}]
+ * Payload (amounts are integer cents). Sections print in the order given:
+ *  sections: [{key, label, subtotalCents, subtotalLabel?, header? (default true), noSubtotal? (default false)}]
  *  lines:    [{section, label, cents}]
- *  netCents (optional), cashNotes: string[], warnings: string[], recipients: string[]
+ *  netCents (optional), netAfterSection? (print Net Income after this section; default: last),
+ *  cashNotes: string[], warnings: string[], recipients: string[]
  */
 function handleMonthlyReport_(req) {
   var year = Number(req.year), month = Number(req.month);
@@ -160,18 +160,17 @@ function writeMonthTab_(ss, tab, business, req, warnings, cashNotes) {
   }
   var byKey = {};
   req.lines.forEach(function (l) { (byKey[l.section] = byKey[l.section] || []).push(l); });
-  var seen = {};
-  req.sections.forEach(function (s) { seen[s.key] = s; });
-  var ordered = SECTION_ORDER.filter(function (k) { return seen[k]; });
-  Object.keys(seen).forEach(function (k) { if (ordered.indexOf(k) < 0) ordered.push(k); });
-  ordered.forEach(function (k) {
-    var s = seen[k];
-    push(String(s.label || k), '', '', 'section');
+  function pushNet() { if (req.netCents !== undefined && req.netCents !== null) push('Net Income', Number(req.netCents) / 100, 'N', 'net'); }
+  var netDone = false;
+  req.sections.forEach(function (sec) {
+    var k = sec.key;
+    if (sec.header !== false) push(String(sec.label || k), '', 'H|' + k, 'section');
     (byKey[k] || []).forEach(function (l) { push('   ' + String(l.label), Number(l.cents) / 100, 'L|' + k + '|' + l.label, 'line'); });
-    push('Total ' + String(s.label || k), Number(s.subtotalCents) / 100, 'S|' + k, 'subtotal');
+    if (!sec.noSubtotal) push(String(sec.subtotalLabel || ('Total ' + (sec.label || k))), Number(sec.subtotalCents) / 100, 'S|' + k, 'subtotal');
     push('', '', '', 'blank');
+    if (req.netAfterSection === k) { pushNet(); push('', '', '', 'blank'); netDone = true; }
   });
-  if (req.netCents !== undefined && req.netCents !== null) push('Net income', Number(req.netCents) / 100, 'N', 'net');
+  if (!netDone) pushNet();
   if (cashNotes.length) {
     push('', '', '', 'blank');
     push('Cash notes', '', '', 'section');
@@ -208,31 +207,32 @@ function rebuildYtd_(ss) {
   var data = {};       // month -> key -> amount
   var labels = {};     // key -> label
   var order = {};      // section -> [line keys in first-seen order]
+  var secOrder = [];   // section keys in the order the month tabs print them
+  var netAfter = null; // the section Net Income follows
   var hasNet = false;
   months.forEach(function (m) {
     var sh = ss.getSheetByName(m);
     var vals = sh.getRange(1, 1, sh.getLastRow(), 3).getValues();
     data[m] = {};
+    var current = null;
     vals.forEach(function (r) {
       var key = String(r[2]);
       if (!key) return;
       data[m][key] = r[1];
-      if (key === 'N') hasNet = true;
       var parts = key.split('|');
+      if (key === 'N') { hasNet = true; if (netAfter === null) netAfter = current; return; }
+      if (parts[0] === 'L' || parts[0] === 'S' || parts[0] === 'H') {
+        current = parts[1];
+        if (secOrder.indexOf(parts[1]) < 0) secOrder.push(parts[1]);
+      }
       if (parts[0] === 'L') {
         labels[key] = String(r[0]).replace(/^\s+/, '');
         var list = (order[parts[1]] = order[parts[1]] || []);
         if (list.indexOf(key) < 0) list.push(key);
-      } else if (parts[0] === 'S') {
+      } else if (parts[0] === 'S' || parts[0] === 'H') {
         labels[key] = String(r[0]);
       }
     });
-  });
-
-  var sections = SECTION_ORDER.filter(function (k) { return labels['S|' + k]; });
-  Object.keys(labels).forEach(function (key) {
-    var p = key.split('|');
-    if (p[0] === 'S' && sections.indexOf(p[1]) < 0) sections.push(p[1]);
   });
 
   var header = ['Yummy Finances YTD'].concat(months, ['Total']);
@@ -243,13 +243,17 @@ function rebuildYtd_(ss) {
     row.push(sum);
     out.push(row); kinds.push(kind);
   }
-  sections.forEach(function (k) {
-    var sectionLabel = labels['S|' + k].replace(/^Total /, '');
-    out.push([sectionLabel].concat(months.map(function () { return ''; }), [''])); kinds.push('section');
+  secOrder.forEach(function (k) {
+    // older tabs have no header key: fall back to the subtotal's label without "Total "
+    var sectionLabel = labels['H|' + k] || (labels['S|' + k] ? labels['S|' + k].replace(/^Total /, '') : '');
+    if (labels['H|' + k] !== undefined || (labels['S|' + k] && (order[k] || []).length)) {
+      out.push([sectionLabel].concat(months.map(function () { return ''; }), [''])); kinds.push('section');
+    }
     (order[k] || []).forEach(function (key) { addRow('   ' + labels[key], key, 'line'); });
-    addRow(labels['S|' + k], 'S|' + k, 'subtotal');
+    if (labels['S|' + k] !== undefined) addRow(labels['S|' + k], 'S|' + k, 'subtotal');
+    if (hasNet && netAfter === k) addRow('Net Income', 'N', 'net');
   });
-  if (hasNet) addRow('Net income', 'N', 'net');
+  if (hasNet && (netAfter === null || secOrder.indexOf(netAfter) < 0)) addRow('Net Income', 'N', 'net');
 
   var width = header.length;
   ytd.getRange(1, 1, out.length, width).setValues(out);

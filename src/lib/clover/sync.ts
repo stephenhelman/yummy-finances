@@ -11,6 +11,7 @@ import {
   type TenderRow,
 } from "@/lib/clover/map";
 import { addMonths, currentMonth, monthBounds, monthOfInstant } from "@/lib/dates";
+import { mapOrder, type OrderRow } from "@/lib/report/discounts";
 
 /** Months re-synced before the target month. Clover's createdTime filter appears to match device
  *  time, so a later month's query will not return a payment uploaded late from an offline device. */
@@ -25,6 +26,8 @@ export type CloverMonthReport = {
   monthLocked: boolean;
   payments: Counts & { unknownTender: number; testMode: number; lateCreated: number };
   refunds: Counts & { unknownTender: number; lateCreated: number };
+  /** Orders, kept only to report discounts (see src/lib/report/discounts.ts). */
+  orders?: Pick<Counts, "fetched" | "created" | "updated" | "unchanged"> & { withDiscount: number };
 };
 
 export type CloverSyncReport = {
@@ -37,6 +40,9 @@ export type CloverSyncReport = {
 };
 
 const json = (v: unknown) => v as Prisma.InputJsonValue;
+
+/** Verified on live data: price + modifier amounts reconcile to payments; discount objects are only used for names. */
+const ORDER_EXPAND = "discounts,lineItems,lineItems.discounts,lineItems.modifications";
 
 /** Updates in small transactions: one big batch outlives Prisma's 5s transaction timeout.
  *  Safe to interrupt: a re-run picks up whatever is still different. */
@@ -176,6 +182,22 @@ async function syncOneMonth(ctx: {
     await updateInChunks(updR, (r) => db.cloverRefund.update({ where: { cloverId: r.cloverId }, data: { ...r, raw: json(r.raw) } }));
   }
 
+  // Orders (discounts). Same window and idempotency as payments: new rows are created, changed rows updated, the rest untouched.
+  const rawOrders = await client.listOrders(start.getTime(), end.getTime(), ORDER_EXPAND);
+  const orders = rawOrders.map(mapOrder);
+  const existingO = new Map(
+    (await db.cloverOrder.findMany({ where: { businessId, cloverId: { in: orders.map((o) => o.cloverId) } } })).map((r) => [r.cloverId, r]),
+  );
+  const orderChanged = (e: { subtotalCents: number; hasDiscount: boolean; discountNames: unknown; testMode: boolean }, o: OrderRow) =>
+    e.subtotalCents !== o.subtotalCents || e.hasDiscount !== o.hasDiscount || e.testMode !== o.testMode || JSON.stringify(e.discountNames ?? []) !== JSON.stringify(o.discountNames);
+  const newO = orders.filter((o) => !existingO.has(o.cloverId));
+  const updO = orders.filter((o) => {
+    const e = existingO.get(o.cloverId);
+    return e && orderChanged(e, o);
+  });
+  if (newO.length) await db.cloverOrder.createMany({ data: newO.map((o) => ({ businessId, ...o, discountNames: o.discountNames })), skipDuplicates: true });
+  if (updO.length) await updateInChunks(updO, (o) => db.cloverOrder.update({ where: { businessId_cloverId: { businessId, cloverId: o.cloverId } }, data: { ...o } }));
+
   return {
     month,
     startUtc: start.toISOString(),
@@ -204,5 +226,6 @@ async function syncOneMonth(ctx: {
       unknownTender: refunds.filter((r) => r.cloverPaymentId && !r.tenderLabel).length,
       lateCreated: newR.filter((r) => inLockedMonth(r.saleTime)).length,
     },
+    orders: { fetched: orders.length, created: newO.length, updated: updO.length, unchanged: orders.length - newO.length - updO.length, withDiscount: orders.filter((o) => o.hasDiscount).length },
   };
 }

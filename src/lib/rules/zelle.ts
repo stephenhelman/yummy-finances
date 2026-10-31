@@ -166,7 +166,7 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
  *   OTHER   no rule: the payments stay in the review queue
  * Labeled by the owner, so they are confirmed and outrank seed rules (priority 50 vs 100).
  */
-export function zelleRecipientRules(args: { name: string; label: RecipientLabel; vendorCategory?: string; confirmed?: boolean; priority?: number }): RuleDef[] {
+export function zelleRecipientRules(args: { name: string; label: RecipientLabel; vendorCategory?: string; wagesCategory?: string; familyCategory?: string; confirmed?: boolean; priority?: number }): RuleDef[] {
   const { name, label } = args;
   if (label === "OTHER") return [];
   if (label === "VENDOR" && !args.vendorCategory) throw new Error("A VENDOR recipient needs a category");
@@ -180,9 +180,9 @@ export function zelleRecipientRules(args: { name: string; label: RecipientLabel;
   });
   switch (label) {
     case "STAFF":
-      return [out("EXPENSE", CAT.WAGES)];
+      return [out("EXPENSE", args.wagesCategory ?? CAT.WAGES)];
     case "FAMILY":
-      return [out("OWNER_DRAW"), inn("OWNER_CONTRIBUTION")];
+      return [out("OWNER_DRAW", args.familyCategory), inn("OWNER_CONTRIBUTION", args.familyCategory)];
     case "VENDOR":
       return [out("EXPENSE", args.vendorCategory), inn("VENDOR_REFUND", args.vendorCategory)];
   }

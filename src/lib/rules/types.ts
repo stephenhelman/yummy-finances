@@ -2,7 +2,7 @@
 //
 // HARD RULES, enforced in code (see engine.ts and validateRule):
 //  - No bank inflow is ever revenue. Revenue comes from Clover only; there is no "revenue" kind here.
-//  - Only EXPENSE and VENDOR_REFUND carry a P&L category. Every other kind is outside the P&L.
+//  - Only EXPENSE and VENDOR_REFUND reach Net Income. Every other kind is outside the P&L (it may still name a report line).
 //  - EXPENSE applies to outflows only, VENDOR_REFUND to inflows only.
 
 export const KINDS = [
@@ -17,6 +17,8 @@ export const KINDS = [
   "LOAN_PAYMENT",
   "VENDOR_REFUND",
   "OTHER_INFLOW",
+  "DONATION", // money out to a charity: outside the P&L, deliberately not an owner draw
+  "OTHER_INCOME", // set only by a person picking an income category on an inflow; a rule can never produce it (validateRule)
 ] as const;
 export type Kind = (typeof KINDS)[number];
 
@@ -33,6 +35,8 @@ export const KIND_DIRECTIONS: Record<Kind, "in" | "out" | "both"> = {
   CASH_DEPOSIT: "in",
   OWNER_CONTRIBUTION: "in",
   OTHER_INFLOW: "in",
+  OTHER_INCOME: "in",
+  DONATION: "out",
   OWNER_DRAW: "out",
   LOAN_PAYMENT: "out",
   INTERNAL_TRANSFER: "both",
@@ -111,9 +115,12 @@ export function validateRule(r: RuleDef): string[] {
   } else if (r.target === "normalized" && r.pattern !== r.pattern.toUpperCase()) {
     errs.push("pattern must be uppercase");
   }
+  if (r.kind === "OTHER_INCOME") errs.push("OTHER_INCOME is chosen by a person, never by a rule (no bank inflow becomes income automatically)");
   const pnl = PNL_KINDS.has(r.kind);
   if (pnl && !r.categoryName) errs.push(`${r.kind} needs a category`);
-  if (!pnl && r.categoryName) errs.push(`${r.kind} must not have a category (only EXPENSE and VENDOR_REFUND touch the P&L)`);
+  // A category may ride along on the other kinds (Other Transfers, Personal: Misc, Donations): it only says which report
+  // line the money shows on. Only EXPENSE and VENDOR_REFUND ever reach Net Income. Reconciliation kinds carry none.
+  if ((r.kind === "CLOVER_SETTLEMENT" || r.kind === "CASH_DEPOSIT") && r.categoryName) errs.push(`${r.kind} must not have a category (it is reconciliation, not a report line)`);
   const allowed = KIND_DIRECTIONS[r.kind];
   if (allowed === "out" && r.direction === "in") errs.push(`${r.kind} only applies to outflows`);
   if (allowed === "in" && r.direction === "out") errs.push(`${r.kind} only applies to inflows`);

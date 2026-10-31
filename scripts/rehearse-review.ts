@@ -39,7 +39,7 @@ async function main() {
       console.log(`queue ${queue.length} items, badge ${badge}, ${cats.length} categories, ${accounts.length} accounts, ${rules.length} rules, ${people.to.length}+${people.from.length} people`);
       must(badge === queue.length, "badge count equals the review queue");
 
-      const supplies = cats.find((c) => c.name === "Supplies")!;
+      const supplies = cats.find((c) => c.key === "materials-and-supplies")!;
       const target = queue.find((t) => t.direction === "out" && !t.isCheck);
       if (!target) throw new Error("no non-check outflow in the review queue to rehearse with");
       const check = queue.find((t) => t.isCheck);

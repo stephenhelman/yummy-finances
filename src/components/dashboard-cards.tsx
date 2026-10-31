@@ -154,6 +154,22 @@ export function TaxNote({ months }: { months: RevenueResult[] }) {
   );
 }
 
+export function ReportsCard({ month }: { month: string }) {
+  return (
+    <section className="card" aria-labelledby="reports-h">
+      <div className="card-title">
+        <h2 id="reports-h">Profit and loss</h2>
+        <span className="badge badge-neutral">Draft</span>
+      </div>
+      <p className="muted">The report as your accountant lays it out, for {monthLabel(month, true)} so far.</p>
+      <div className="row">
+        <Link href={`/admin/reports/${month}`} className="btn btn-secondary">Open draft</Link>
+        <Link href="/admin/reports" className="btn btn-ghost">All months</Link>
+      </div>
+    </section>
+  );
+}
+
 export function ReviewCard({ data }: { data: ReviewCardData }) {
   if (data.kind === "pending") {
     return (

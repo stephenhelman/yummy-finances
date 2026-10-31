@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Notice, PendingNotice } from "@/components/review/txn-card";
 import { getBusiness, requireAdmin } from "@/lib/auth";
+import { currentMonth } from "@/lib/dates";
+import { CategoriesTab } from "./categories-tab";
 import { db } from "@/lib/db";
-import { PICKABLE_SECTIONS, type CategoryOption } from "@/lib/review/choices";
+import { pickableGroups, type CategoryOption } from "@/lib/review/choices";
 import { classificationIsReady } from "@/lib/review/gate";
 import { loadCategories, loadPeople, loadRuleViews, type PersonView, type RuleView } from "@/lib/review/queries";
 import { kindLabel } from "@/lib/review/view";
@@ -19,7 +21,8 @@ export default async function RulesPage({ searchParams }: { searchParams: Params
   await requireAdmin();
   const business = await getBusiness();
   const sp = await searchParams;
-  const tab = one(sp.tab) === "people" ? "people" : "rules";
+  const t = one(sp.tab);
+  const tab = t === "people" ? "people" : t === "categories" ? "categories" : "rules";
 
   if (!(await classificationIsReady(business.id))) {
     return (
@@ -29,7 +32,7 @@ export default async function RulesPage({ searchParams }: { searchParams: Params
       </>
     );
   }
-  const categories = (await loadCategories(db, business.id)).filter((c) => PICKABLE_SECTIONS.has(c.section));
+  const categories = await loadCategories(db, business.id);
 
   return (
     <>
@@ -37,9 +40,12 @@ export default async function RulesPage({ searchParams }: { searchParams: Params
       <nav className="tabs" aria-label="Rules sections">
         <Link href="/admin/rules" aria-current={tab === "rules" ? "page" : undefined}>Rules</Link>
         <Link href="/admin/rules?tab=people" aria-current={tab === "people" ? "page" : undefined}>People</Link>
+        <Link href="/admin/rules?tab=categories" aria-current={tab === "categories" ? "page" : undefined}>Categories</Link>
       </nav>
       <Notice notice={one(sp.notice)} error={one(sp.error)} />
-      {tab === "rules" ? <RulesTab show={one(sp.show)} categories={categories} businessId={business.id} /> : <PeopleTab categories={categories} businessId={business.id} />}
+      {tab === "rules" ? <RulesTab show={one(sp.show)} categories={categories} businessId={business.id} /> : null}
+      {tab === "people" ? <PeopleTab categories={categories} businessId={business.id} /> : null}
+      {tab === "categories" ? <CategoriesTab businessId={business.id} year={currentMonth(new Date(), business.timezone).slice(0, 4)} merge={one(sp.mergeFrom) && one(sp.mergeTo) ? `${one(sp.mergeFrom)}:${one(sp.mergeTo)}` : undefined} /> : null}
     </>
   );
 }
@@ -102,16 +108,13 @@ function RuleCard({ rule, categories, returnTo }: { rule: RuleView; categories: 
               <label htmlFor={`c-${rule.id}`}>Category</label>
               <select id={`c-${rule.id}`} name="category" className="input" defaultValue="">
                 <option value="" disabled>Choose a category</option>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {pickableGroups(categories, rule.direction === "IN" ? -1 : 1).map((g) => (
+                  <optgroup key={g.group} label={g.group}>
+                    {g.items.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </optgroup>
+                ))}
               </select>
               <button type="submit" name="choice" value="more:category" className="btn btn-primary">Use this category</button>
-            </div>
-            <div className="picks">
-              <button type="submit" name="choice" value="pick:personal" className="btn btn-secondary pick">Personal</button>
-              <button type="submit" name="choice" value="kind:INTERNAL_TRANSFER" className="btn btn-secondary pick">Internal transfer</button>
-              <button type="submit" name="choice" value="kind:CARD_PAYMENT" className="btn btn-secondary pick">Card payment</button>
-              <button type="submit" name="choice" value="kind:LOAN_PAYMENT" className="btn btn-secondary pick">Loan payment</button>
-              <button type="submit" name="choice" value="kind:SALES_TAX_REMITTANCE" className="btn btn-secondary pick">Sales tax</button>
             </div>
             {rule.source === "SEED" ? <p className="small muted">This is a built-in rule. Your change is saved as your own rule and the built-in one is turned off.</p> : null}
           </form>
@@ -164,7 +167,7 @@ function PersonCard({ person: p, categories, direction }: { person: PersonView; 
             <label htmlFor={`v-${id}`}>Which category?</label>
             <select id={`v-${id}`} name="category" className="input" defaultValue="">
               <option value="" disabled>Choose a category</option>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              {categories.filter((c) => c.treatment === "PNL_EXPENSE" && !c.archived).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
             <button type="submit" name="label" value="VENDOR" className="btn btn-primary">Label as vendor</button>
           </div>

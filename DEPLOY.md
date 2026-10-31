@@ -97,6 +97,18 @@ DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run db:status 
 
 `npm run predeploy -- --target prod` runs the check alone.
 
+## 2b. Category template (after the template migration)
+
+The accountant's P&L template (groups, categories, quick picks) is data. After `db:deploy` has applied `20261031000000_category_template`, write it once per database:
+
+```bash
+DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run categories:seed -- --target prod
+```
+
+It refuses unless the endpoint matches the allowlist, is safe to repeat, and never overwrites later edits to names, groups, order or quick picks. Old categories that aren't part of the template are archived (not pickable) and grouped under "Unmapped (legacy)"; they keep their transactions and still appear on a report while they hold money. Nothing is moved until the mapping is reviewed and applied.
+
+Then pull the last months of Clover orders (they carry the discounts): `npm run sync:clover -- --month=YYYY-MM` for the current month, and for each earlier month you want discounts for (each run covers that month and the two before it). A paid order with no stored detail shows as a warning on the report instead of being silently left out.
+
 ## 3. Seed production
 
 Seeding creates the one Business row and the P&L categories. It is idempotent, and it refuses to run if the existing Business has a different timezone.

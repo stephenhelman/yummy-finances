@@ -47,6 +47,8 @@ export type RevenueResult = {
   refunds: Split; // Σ(refund.amount − refund.tax)
   netSales: Split; // grossSales − refunds
   salesTaxCollected: Split; // memo: Σ payment tax − Σ refund tax
+  taxOnPayments: Split; // Σ payment tax
+  taxOnRefunds: Split; // Σ refund tax (for the sales-tax-in-revenue layout)
   tips: Split; // memo: pass-through to staff, not revenue
   counts: { payments: Split; refunds: Split };
   ignored: { payments: number; refunds: number; outsideMonth: number };
@@ -124,6 +126,8 @@ export function computeRevenue(args: {
     refunds: refundNet,
     netSales,
     salesTaxCollected,
+    taxOnPayments: taxIn,
+    taxOnRefunds: taxOut,
     tips,
     counts: { payments: payCount, refunds: refCount },
     ignored,

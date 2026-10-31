@@ -45,28 +45,31 @@ async function main() {
 
   // mapper
   const biz = { name: "Yummy", ownerEmail: "o@x.com", ccEmail: "o@x.com" };
-  const snap = {
-    month: "2026-09", status: "LOCKED" as "LOCKED" | "DRAFT",
-    dataJson: {
-      sections: [
-        { section: "OPEX", lines: [{ name: "Rent", cents: 150000 }] },
-        { section: "REVENUE", lines: [{ name: "Net sales", cents: 1000000 }, { name: "Catering", cents: 50000 }] },
-        { section: "COGS", lines: [{ name: "Dairy", cents: 300000 }] },
-      ],
-      cashNotes: ["Cash deposit pending"],
-      warnings: [{ code: "UNKNOWN_TENDER", message: "Unknown tender" }],
-    },
+  const mkLine = (key: string, label: string, cents: number) => ({ key, label, cents });
+  const report = {
+    label: "2026-09", salesTaxInRevenue: false,
+    revenue: { lines: [mkLine("total-sales", "Total Revenue/Sales", 1_050_000), mkLine("sales-returns", "Less: Sales Returns", 20_000), mkLine("discounts", "Less: Discounts and Allowances", 30_000), mkLine("other-income", "Other Income", 0)], grossRevenueCents: 1_000_000 },
+    expenses: { groups: [{ name: null, lines: [mkLine("rent", "Rent", 150_000)], subtotalCents: 150_000 }, { name: "Sales/Food", lines: [mkLine("purchase", "Purchase", 300_000)], subtotalCents: 300_000 }], totalCents: 450_000 },
+    netIncomeCents: 550_000,
+    below: { groups: [{ name: "Other", lines: [mkLine("payments", "Payments", 10_000)], subtotalCents: 10_000 }], uncategorized: { key: "uncategorized", label: "Uncategorized", cents: 500 } },
+    cashNotes: ["Cash deposit pending"], warnings: ["Unknown tender"],
   };
+  const snap = { month: "2026-09", status: "LOCKED" as "LOCKED" | "DRAFT", dataJson: report as never };
   const p = buildMonthlyReportPayload(snap, biz);
   assert.equal(p.year, 2026); assert.equal(p.month, 9);
-  assert.deepEqual(p.sections.map((s) => [s.key, s.subtotalCents]), [["REVENUE", 1050000], ["COGS", 300000], ["OPEX", 150000]]);
-  assert.equal(p.lines.length, 4);
-  assert.equal(p.netCents, 600000);
+  assert.deepEqual(p.sections.map((s) => [s.key, s.subtotalCents]), [["REVENUE", 1_000_000], ["EXPENSES", 150_000], ["EXP_SALES_FOOD", 300_000], ["TOTAL_EXPENSES", 450_000], ["BELOW", 0], ["BELOW_OTHER", 10_000], ["UNCATEGORIZED", 500]]);
+  assert.equal(p.sections[0].subtotalLabel, "Gross Revenue");
+  assert.equal(p.sections[3].header, false);
+  assert.equal(p.netAfterSection, "TOTAL_EXPENSES");
+  assert.deepEqual(p.lines.filter((l) => l.section === "REVENUE").map((l) => l.cents), [1_050_000, -20_000, -30_000, 0], "deductions go out negative");
+  assert.equal(p.netCents, 550_000);
   assert.deepEqual(p.warnings, ["Unknown tender"]);
+  assert.deepEqual(p.cashNotes, ["Cash deposit pending"]);
   assert.deepEqual(p.recipients, ["o@x.com"], "deduped");
   assert.throws(() => buildMonthlyReportPayload({ ...snap, status: "DRAFT" as const }, biz), /not locked/);
-  assert.throws(() => buildMonthlyReportPayload({ ...snap, dataJson: { sections: [{ section: "OPEX", lines: [{ name: "x", cents: 1.5 }] }] } }, biz), /malformed/);
-  assert.throws(() => buildMonthlyReportPayload({ ...snap, dataJson: null }, biz), /no P&L/);
+  assert.throws(() => buildMonthlyReportPayload({ ...snap, dataJson: { ...report, revenue: { ...report.revenue, lines: [mkLine("x", "x", 1.5)] } } }, biz), /malformed/);
+  assert.throws(() => buildMonthlyReportPayload({ ...snap, dataJson: null }, biz), /no P&L report/);
+  assert.throws(() => buildMonthlyReportPayload({ ...snap, dataJson: { sections: [] } }, biz), /no P&L report/, "the old snapshot shape is not a report");
   const r2 = rec();
   await sendMonthlyReport(snap, biz, { env, fetchImpl: r2.fetchImpl });
   assert.equal(r2.calls[0].body.type, "monthly_report");

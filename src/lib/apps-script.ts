@@ -6,9 +6,21 @@ export type MonthlyReportPayload = {
   year: number;
   month: number;
   businessName: string;
-  sections: { key: string; label: string; subtotalCents: number }[];
+  sections: {
+    key: string;
+    label: string;
+    subtotalCents: number;
+    /** Text of the subtotal row. Default "Total <label>". */
+    subtotalLabel?: string;
+    /** false = no header row (a bare subtotal such as "Total Expenses"). Default true. */
+    header?: boolean;
+    /** true = lines only, no subtotal row. Default false. */
+    noSubtotal?: boolean;
+  }[];
   lines: { section: string; label: string; cents: number }[];
   netCents?: number;
+  /** Print Net Income right after this section (default: after the last one). */
+  netAfterSection?: string;
   cashNotes: string[];
   warnings: string[];
   recipients: string[];

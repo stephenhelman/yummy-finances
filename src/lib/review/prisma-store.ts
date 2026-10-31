@@ -3,6 +3,7 @@ import type { RuleRow } from "@/lib/rules/convert";
 import { prismaRulesStore } from "@/lib/rules/prisma-store";
 import type { StoredTxn } from "@/lib/rules/apply";
 import { ACTIONS, type AuditRecord, type ClassifyStore, type RuleRecord } from "@/lib/review/service";
+import type { CategoryOption } from "@/lib/review/choices";
 import { requireClassification } from "@/lib/rules/readiness";
 import { KINDS, type Kind } from "@/lib/rules/types";
 
@@ -18,6 +19,17 @@ const toRecord = (r: DbRule): RuleRecord => ({
   accounts: (r.accounts as RuleRow["accounts"]) ?? null, amountMinCents: r.amountMinCents, amountMaxCents: r.amountMaxCents,
   kind: r.kind as Kind, categoryId: r.categoryId, priority: r.priority, confirmed: r.confirmed, source: r.source, active: r.active, note: r.note,
 });
+
+/** Every category (archived included) with its group, in report order. */
+export async function loadCategoryOptions(client: Pick<PrismaClient, "category">, businessId: string): Promise<CategoryOption[]> {
+  const rows = await client.category.findMany({ where: { businessId }, include: { group: true }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] });
+  return rows.map(
+    (c): CategoryOption => ({
+      id: c.id, name: c.name, key: c.key, groupName: c.group?.name ?? null, groupSort: c.group?.sortOrder ?? -1, treatment: c.treatment,
+      nonPlKind: c.nonPlKind && KIND_SET.has(c.nonPlKind) ? (c.nonPlKind as Kind) : null, showWhenZero: c.showWhenZero, archived: c.archived, quickPickOrder: c.quickPickOrder, sortOrder: c.sortOrder,
+    }),
+  );
+}
 
 /** The rules store plus the single-row reads and writes the review screens need. `actor` is who gets the audit entries. */
 export function prismaClassifyStore(client: Client, businessId: string, actor: string): ClassifyStore {
@@ -41,8 +53,7 @@ export function prismaClassifyStore(client: Client, businessId: string, actor: s
     },
 
     async categories() {
-      const rows = await client.category.findMany({ where: { businessId }, orderBy: [{ section: "asc" }, { sortOrder: "asc" }, { name: "asc" }] });
-      return rows.map((c) => ({ id: c.id, name: c.name, section: c.section }));
+      return loadCategoryOptions(client, businessId);
     },
 
     async setTxnState(id, s) {

@@ -1,91 +1,56 @@
-import { CAT } from "@/lib/rules/categories";
-import { KIND_DIRECTIONS, PNL_KINDS, directionOf, type Kind } from "@/lib/rules/types";
+import { deriveKind, type CategoryTreatment } from "@/lib/report/template";
+import type { Kind } from "@/lib/rules/types";
 
-// What a person can choose for a transaction, and how a choice is resolved against the transaction's direction.
-// Pure. The form posts one string per choice ("pick:wages", "cat:<categoryId>", "kind:INTERNAL_TRANSFER").
+// What a person can choose for a transaction. The owner only ever picks a CATEGORY; the internal kind is derived from the
+// category's treatment and the direction of the money (see deriveKind). The form posts "cat:<categoryId>".
 
-export type QuickPick = { id: string; label: string; categoryName: string | null };
+export type CategoryOption = {
+  id: string;
+  name: string;
+  key: string | null;
+  groupName: string | null;
+  groupSort: number;
+  treatment: CategoryTreatment;
+  nonPlKind: Kind | null;
+  showWhenZero: boolean;
+  archived: boolean;
+  quickPickOrder: number | null;
+  sortOrder: number;
+};
 
-/** The one-tap buttons, in the order the owner asked for. "Personal" has no category: it is the owner's own money. */
-export const QUICK_PICKS: readonly QuickPick[] = [
-  { id: "personal", label: "Personal", categoryName: null },
-  { id: "wages", label: "Wages", categoryName: CAT.WAGES },
-  { id: "dairy", label: "Dairy & ingredients", categoryName: CAT.DAIRY },
-  { id: "supplies", label: "Supplies", categoryName: CAT.SUPPLIES },
-  { id: "candy", label: "Candy & toppings", categoryName: CAT.CANDY },
-];
-
-/** Kinds offered under "More…" (all outside the P&L). Personal covers owner draw / contribution. */
-export const MORE_KINDS: readonly { kind: Kind; label: string }[] = [
-  { kind: "INTERNAL_TRANSFER", label: "Internal transfer" },
-  { kind: "CARD_PAYMENT", label: "Card payment" },
-  { kind: "LOAN_PAYMENT", label: "Loan payment" },
-  { kind: "SALES_TAX_REMITTANCE", label: "Sales tax" },
-  { kind: "OTHER_INFLOW", label: "Other inflow" },
-];
-
-export type Choice = { kind: Kind; categoryName: string | null; label: string };
-export type CategoryOption = { id: string; name: string; section: string };
-
-/** Sections a person may assign a bank transaction to. Revenue comes from Clover only; NON_PL is covered by kinds. */
-export const PICKABLE_SECTIONS: ReadonlySet<string> = new Set(["COGS", "OPEX", "OTHER"]);
-
+export type Choice = { kind: Kind; categoryId: string; categoryName: string; treatment: CategoryTreatment; key: string | null; label: string };
 export type ChoiceResult = { ok: true; choice: Choice } | { ok: false; error: string };
 
-/** Problems with applying a kind to a direction (empty = valid). The same hard rules the rule engine enforces. */
-export function validateChoice(kind: Kind, categoryName: string | null, amountCents: number): string | null {
-  const dir = directionOf(amountCents);
-  const pnl = PNL_KINDS.has(kind);
-  if (pnl && !categoryName) return "Pick a category.";
-  if (!pnl && categoryName) return "That choice has no category.";
-  const allowed = KIND_DIRECTIONS[kind];
-  if (allowed !== "both" && allowed !== dir) return dir === "out" ? "That choice is only for money coming in." : "That choice is only for money going out.";
-  return null;
-}
-
-/**
- * Resolve a posted choice for a transaction. Direction decides what a pick means:
- *   Personal: outflow -> OWNER_DRAW, inflow -> OWNER_CONTRIBUTION
- *   a category: outflow -> EXPENSE, inflow -> VENDOR_REFUND (a refund from that kind of vendor)
- */
+/** Resolve a posted choice for a transaction. Direction decides the kind: an expense category on an inflow is a vendor refund. */
 export function resolveChoice(value: string, amountCents: number, categories: readonly CategoryOption[]): ChoiceResult {
-  const dir = directionOf(amountCents);
-  const [type, rest = ""] = [value.slice(0, value.indexOf(":")), value.slice(value.indexOf(":") + 1)];
-  let choice: Choice | null = null;
+  const id = value.startsWith("cat:") ? value.slice(4) : "";
+  const cat = categories.find((c) => c.id === id);
+  if (!cat) return { ok: false, error: "Unknown category." };
+  const k = deriveKind(cat, amountCents);
+  if (!k.ok) return { ok: false, error: k.error };
+  return { ok: true, choice: { kind: k.kind, categoryId: cat.id, categoryName: cat.name, treatment: cat.treatment, key: cat.key, label: cat.name } };
+}
 
-  if (type === "pick") {
-    const pick = QUICK_PICKS.find((p) => p.id === rest);
-    if (!pick) return { ok: false, error: "Unknown choice." };
-    if (!pick.categoryName) choice = { kind: dir === "out" ? "OWNER_DRAW" : "OWNER_CONTRIBUTION", categoryName: null, label: pick.label };
-    else choice = { kind: dir === "out" ? "EXPENSE" : "VENDOR_REFUND", categoryName: pick.categoryName, label: pick.label };
-  } else if (type === "cat") {
-    const cat = categories.find((c) => c.id === rest);
-    if (!cat || !PICKABLE_SECTIONS.has(cat.section)) return { ok: false, error: "Unknown category." };
-    choice = { kind: dir === "out" ? "EXPENSE" : "VENDOR_REFUND", categoryName: cat.name, label: cat.name };
-  } else if (type === "kind") {
-    const k = MORE_KINDS.find((m) => m.kind === rest);
-    if (!k) return { ok: false, error: "Unknown choice." };
-    choice = { kind: k.kind, categoryName: null, label: k.label };
-  } else {
-    return { ok: false, error: "Unknown choice." };
+const byOrder = (a: CategoryOption, b: CategoryOption) => a.groupSort - b.groupSort || a.sortOrder - b.sortOrder;
+
+/** The Review quick-pick buttons: categories the owner marked as quick picks, in their order. */
+export function quickPicks(categories: readonly CategoryOption[], amountCents: number): { id: string; label: string }[] {
+  const inflow = amountCents < 0;
+  return categories
+    .filter((c) => c.quickPickOrder !== null && !c.archived && deriveKind(c, amountCents).ok)
+    .sort((a, b) => a.quickPickOrder! - b.quickPickOrder!)
+    .map((c) => ({ id: c.id, label: inflow && c.treatment === "PNL_EXPENSE" ? `Refund: ${c.name}` : c.name }));
+}
+
+export type CategoryGroupOption = { group: string; items: CategoryOption[] };
+
+/** "More…": every pickable category for this direction, grouped as on the report (top-level lines first). */
+export function pickableGroups(categories: readonly CategoryOption[], amountCents: number, topLabel = "Expenses"): CategoryGroupOption[] {
+  const groups = new Map<string, CategoryOption[]>();
+  for (const c of [...categories].sort(byOrder)) {
+    if (c.archived || !deriveKind(c, amountCents).ok) continue;
+    const g = c.groupName ?? (c.treatment === "PNL_INCOME" ? "Income" : topLabel);
+    (groups.get(g) ?? groups.set(g, []).get(g)!).push(c);
   }
-
-  if (dir === "in" && choice.categoryName === CAT.WAGES) return { ok: false, error: "Wages are money going out." };
-  const err = validateChoice(choice.kind, choice.categoryName, amountCents);
-  return err ? { ok: false, error: err } : { ok: true, choice };
-}
-
-/** Quick picks that make sense for the direction (inflows: Personal, plus categories as vendor refunds). */
-export function picksFor(amountCents: number): { id: string; label: string }[] {
-  const dir = directionOf(amountCents);
-  return QUICK_PICKS.filter((p) => dir === "out" || p.id !== "wages").map((p) => ({
-    id: p.id,
-    label: dir === "in" && p.categoryName ? `Refund: ${p.label}` : p.label,
-  }));
-}
-
-/** More… kinds that apply to this direction. */
-export function moreKindsFor(amountCents: number): readonly { kind: Kind; label: string }[] {
-  const dir = directionOf(amountCents);
-  return MORE_KINDS.filter((m) => KIND_DIRECTIONS[m.kind] === "both" || KIND_DIRECTIONS[m.kind] === dir);
+  return [...groups].map(([group, items]) => ({ group, items }));
 }

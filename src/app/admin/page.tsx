@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import { BankCard, CloverCard, CloverCardSkeleton, RevenueCard, ReviewCard, TaxNote } from "@/components/dashboard-cards";
+import { BankCard, CloverCard, CloverCardSkeleton, ReportsCard, RevenueCard, ReviewCard, TaxNote } from "@/components/dashboard-cards";
 import { getBusiness, requireAdmin } from "@/lib/auth";
 import { loadDashboard, loadReviewCard } from "@/lib/dashboard";
 import { dayOfMonth, monthLabel } from "@/lib/format";
@@ -31,6 +31,7 @@ export default async function Dashboard() {
       </div>
 
       <ReviewCard data={review} />
+      <ReportsCard month={d.currentMonth} />
 
       <TaxNote months={[d.current, d.previous]} />
 

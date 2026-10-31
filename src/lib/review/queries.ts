@@ -3,6 +3,7 @@ import { KINDS, type Kind } from "@/lib/rules/types";
 import { summarizeRecipients, type RecipientRow, type ZelleItem } from "@/lib/rules/zelle";
 import { isFrozen } from "@/lib/rules/apply";
 import { requireClassification } from "@/lib/rules/readiness";
+import { loadCategoryOptions } from "@/lib/review/prisma-store";
 import { viewOf, type TxnView } from "@/lib/review/view";
 
 // Reads for the review screens. Every read of classification enforces requireClassification itself (see
@@ -60,8 +61,7 @@ export async function loadAccounts(client: Client, businessId: string) {
 }
 
 export async function loadCategories(client: Client, businessId: string) {
-  const rows = await client.category.findMany({ where: { businessId }, orderBy: [{ section: "asc" }, { sortOrder: "asc" }, { name: "asc" }] });
-  return rows.map((c) => ({ id: c.id, name: c.name, section: c.section }));
+  return loadCategoryOptions(client, businessId);
 }
 
 // ---- rules screen --------------------------------------------------------------------------------
@@ -150,4 +150,25 @@ export async function reviewBadgeCount(client: Client, businessId: string, since
   ]);
   const locked = new Set(snaps.map((s) => s.month));
   return rows.filter((r) => !isFrozen({ date: day(r.date), isLate: r.isLate, adjustmentMonth: r.adjustmentMonth }, locked)).length;
+}
+
+// ---- categories screen ------------------------------------------------------------------------------------------
+
+export type CategoryStat = { count: number; cents: number };
+
+/** Per category: transactions this year and their net dollars (money out positive). Read-only. */
+export async function loadCategoryStats(client: Client, businessId: string, year: string): Promise<Map<string, CategoryStat>> {
+  await requireClassification(client, businessId);
+  const rows = await client.bankTransaction.groupBy({
+    by: ["categoryId"],
+    where: { businessId, categoryId: { not: null }, pending: false, removedAt: null, supersededAt: null, date: { gte: new Date(`${year}-01-01T00:00:00Z`), lt: new Date(`${Number(year) + 1}-01-01T00:00:00Z`) } },
+    _count: { _all: true },
+    _sum: { amountCents: true },
+  });
+  return new Map(rows.map((r) => [r.categoryId!, { count: r._count._all, cents: r._sum.amountCents ?? 0 }]));
+}
+
+export async function loadGroups(client: Pick<PrismaClient, "categoryGroup">, businessId: string) {
+  const rows = await client.categoryGroup.findMany({ where: { businessId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] });
+  return rows.map((g) => ({ id: g.id, name: g.name, sortOrder: g.sortOrder }));
 }

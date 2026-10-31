@@ -1,10 +1,10 @@
 import { applyRules, isFrozen, type ApplyResult, type ReviewStatusValue, type RulesStore, type StoredTxn } from "@/lib/rules/apply";
 import { defToRow, rowToDef, type RuleRow } from "@/lib/rules/convert";
 import { normalizeDescriptor } from "@/lib/rules/normalize";
-import { PNL_KINDS, directionOf, validateRule, type Kind, type RuleDef } from "@/lib/rules/types";
+import { directionOf, validateRule, type Kind, type RuleDef } from "@/lib/rules/types";
 import { extractZelleCounterparty, zelleRecipientRules, type RecipientLabel } from "@/lib/rules/zelle";
-import { CAT } from "@/lib/rules/categories";
-import { resolveChoice, type CategoryOption } from "@/lib/review/choices";
+import { resolveChoice, type CategoryOption, type Choice } from "@/lib/review/choices";
+import { KEY } from "@/lib/report/template";
 
 // Manual changes: classify one transaction (optionally "always for this merchant"), undo the last one, and the
 // rule / recipient edits behind the Rules screen. Everything goes through ClassifyStore so it is testable without a
@@ -63,10 +63,16 @@ export function ruleKeyFor(t: Pick<StoredTxn, "normalizedMerchant" | "raw">): st
   return key;
 }
 
+/** Staff and family rules name the business's own Wages / Personal categories (found by key, so renames don't break them). */
+function zelleCategories(cats: readonly CategoryOption[], choice: Choice): { wagesCategory?: string; familyCategory?: string } {
+  const wages = cats.find((c) => c.key === KEY.WAGES && !c.archived)?.name;
+  return { wagesCategory: wages, familyCategory: choice.treatment === "PERSONAL" ? choice.categoryName : cats.find((c) => c.key === KEY.PERSONAL_MISC && !c.archived)?.name };
+}
+
 const isZelle = (key: string) => /^ZELLE (SCHEDULED )?PAYMENT (TO|FROM)\b/.test(key);
 
 /** Rule definitions for "Always do this for <merchant>". Throws a user-safe message when no rule makes sense. */
-export function alwaysRulesFor(t: StoredTxn, choice: { kind: Kind; categoryName: string | null; label: string }): RuleDef[] {
+export function alwaysRulesFor(t: StoredTxn, choice: Choice, cats: readonly CategoryOption[] = []): RuleDef[] {
   const key = ruleKeyFor(t);
   if (!key) throw new Error("Checks have no payee, so a rule can't be made for them. This one stays per-transaction.");
   const dir = directionOf(t.amountCents);
@@ -76,13 +82,13 @@ export function alwaysRulesFor(t: StoredTxn, choice: { kind: Kind; categoryName:
     if (!cp) throw new Error("Couldn't read who that Zelle payment was with, so no rule was made.");
     let label: RecipientLabel;
     let vendorCategory: string | undefined;
-    if (choice.kind === "OWNER_DRAW" || choice.kind === "OWNER_CONTRIBUTION") label = "FAMILY";
-    else if (choice.kind === "EXPENSE" && choice.categoryName === CAT.WAGES) label = "STAFF";
-    else if (PNL_KINDS.has(choice.kind) && choice.categoryName) {
+    if (choice.treatment === "PERSONAL") label = "FAMILY";
+    else if (choice.key === KEY.WAGES) label = "STAFF";
+    else if (choice.treatment === "PNL_EXPENSE") {
       label = "VENDOR";
       vendorCategory = choice.categoryName;
-    } else throw new Error("For Zelle payments a rule can only be Personal, Wages or a category. This one stays per-transaction.");
-    return zelleRecipientRules({ name: cp.name, label, vendorCategory });
+    } else throw new Error("For Zelle payments a rule can only be Personal, Wages or an expense category. This one stays per-transaction.");
+    return zelleRecipientRules({ name: cp.name, label, vendorCategory, ...zelleCategories(cats, choice) });
   }
 
   const def: RuleDef = {
@@ -93,7 +99,7 @@ export function alwaysRulesFor(t: StoredTxn, choice: { kind: Kind; categoryName:
     target: "normalized",
     direction: dir,
     kind: choice.kind,
-    categoryName: choice.categoryName ?? undefined,
+    categoryName: choice.categoryName,
     priority: 50,
     confirmed: true,
     source: "USER",
@@ -115,14 +121,13 @@ export async function classifyManually(store: ClassifyStore, input: { txnId: str
   if (!resolved.ok) return fail(resolved.error);
   const { choice } = resolved;
   const idByName = new Map(cats.map((c) => [c.name, c.id]));
-  const categoryId = choice.categoryName ? idByName.get(choice.categoryName) ?? null : null;
-  if (choice.categoryName && !categoryId) return fail(`The category "${choice.categoryName}" doesn't exist yet.`);
+  const categoryId = choice.categoryId;
 
   // Rules first: if one can't be made, nothing at all is changed.
   let defs: RuleDef[] = [];
   if (input.always) {
     try {
-      defs = alwaysRulesFor(txn, choice);
+      defs = alwaysRulesFor(txn, choice, cats);
     } catch (e) {
       return fail((e as Error).message);
     }
@@ -224,7 +229,7 @@ export async function changeRule(store: ClassifyStore, ruleId: string, value: st
   const resolved = resolveChoice(value, probe, cats);
   if (!resolved.ok) return fail(resolved.error);
   const { choice } = resolved;
-  const categoryId = choice.categoryName ? cats.find((c) => c.name === choice.categoryName)?.id ?? null : null;
+  const categoryId = choice.categoryId;
 
   const nameById = new Map(cats.map((c) => [c.id, c.name]));
   const next: RuleRecord = { ...rule, kind: choice.kind, categoryId };
@@ -259,11 +264,13 @@ export async function labelRecipient(store: ClassifyStore, input: LabelInput): P
   let vendorCategory: string | undefined;
   if (input.label === "VENDOR") {
     const cat = cats.find((c) => c.id === input.vendorCategoryId);
-    if (!cat || !PICKABLE_VENDOR_SECTIONS.has(cat.section)) return fail("Pick a category for a vendor.");
+    if (!cat || cat.archived || cat.treatment !== "PNL_EXPENSE") return fail("Pick a category for a vendor.");
     vendorCategory = cat.name;
   }
+  const wagesCategory = cats.find((c) => c.key === KEY.WAGES && !c.archived)?.name;
+  const familyCategory = cats.find((c) => c.key === KEY.PERSONAL_MISC && !c.archived)?.name;
 
-  const wanted = zelleRecipientRules({ name, label: input.label, vendorCategory });
+  const wanted = zelleRecipientRules({ name, label: input.label, vendorCategory, wagesCategory, familyCategory });
   const allKeys = zelleRecipientRules({ name, label: "FAMILY" }).map((r) => r.id); // both directions
   for (const def of wanted) await store.saveRule({ ...defToRow(def, idByName), active: true });
   // a previous label may have had a rule the new one doesn't (Family has an inflow rule, Staff doesn't): switch it off
@@ -275,4 +282,3 @@ export async function labelRecipient(store: ClassifyStore, input: LabelInput): P
   return { ok: true, reapplied: await reapply(store) };
 }
 
-const PICKABLE_VENDOR_SECTIONS = new Set(["COGS", "OPEX", "OTHER"]);
