@@ -2,6 +2,7 @@ import { formatCents } from "@/lib/money";
 import { normalizeDescriptor } from "@/lib/rules/normalize";
 import type { Kind } from "@/lib/rules/types";
 import type { RevenueResult } from "@/lib/revenue";
+import { computeRatios, type Ratios } from "@/lib/report/ratios";
 import { COMPUTED_LINES, DEFAULT_LINE_BY_KIND, GROUPS, KEY, type CategoryTreatment } from "@/lib/report/template";
 
 // The accountant's P&L, built from data. Pure: the caller loads Clover revenue, discounts, categories and the month's
@@ -50,9 +51,19 @@ export type ReportInput = {
 export type ReportLine = { key: string; label: string; cents: number; categoryId?: string; count?: number; computed?: boolean };
 export type ReportGroup = { name: string | null; lines: ReportLine[]; subtotalCents: number };
 
+/** Money facts that sit beside the P&L (cash notes), as numbers so a year view can add them up. */
+export type CashFacts = {
+  taxCollectedCents: number; taxRemittedCents: number; tipsCents: number; loanPaymentsCents: number;
+  cashDepositedCents: number; cashCollectedCents: number; ownerDrawsCents: number; ownerContributionsCents: number;
+};
+
 export type Report = {
   label: string;
   salesTaxInRevenue: boolean;
+  /** After discounts and returns, before sales tax and tips, whatever the sales-tax setting. The denominator of every ratio. */
+  netSalesCents: number;
+  ratios: Ratios;
+  cash: CashFacts;
   revenue: { lines: ReportLine[]; grossRevenueCents: number };
   expenses: { groups: ReportGroup[]; totalCents: number }; // the group with name null holds the top-level lines
   netIncomeCents: number;
@@ -78,12 +89,14 @@ export function buildReport(input: ReportInput): Report {
   const perCat = new Map<string, Bucket>();
   const zelle = bucket(), checks = bucket(), uncategorized = bucket();
   const unreviewedInflows = bucket();
-  const loan = bucket(), cashDeposits = bucket();
+  const loan = bucket(), cashDeposits = bucket(), draws = bucket(), contributions = bucket();
 
   for (const t of input.txns) {
     if (t.kind === "CLOVER_SETTLEMENT") continue; // card revenue is counted from Clover; this is only reconciliation
     if (t.kind === "CASH_DEPOSIT") { add(cashDeposits, Math.abs(t.amountCents)); continue; }
     if (t.kind === "LOAN_PAYMENT") add(loan, Math.abs(t.amountCents));
+    if (t.kind === "OWNER_DRAW") add(draws, Math.abs(t.amountCents));
+    if (t.kind === "OWNER_CONTRIBUTION") add(contributions, Math.abs(t.amountCents));
 
     if (t.reviewStatus === "NEEDS_REVIEW") {
       const key = t.normalizedMerchant ?? normalizeDescriptor(t.raw);
@@ -175,9 +188,17 @@ export function buildReport(input: ReportInput): Report {
   if (input.ordersMissing) warnings.push(`${input.ordersMissing} paid order${input.ordersMissing === 1 ? "" : "s"} have no order detail yet, so Discounts may be understated. Run Sync now.`);
   if (input.discountAnomalies) warnings.push(`${input.discountAnomalies} order${input.discountAnomalies === 1 ? " was" : "s were"} paid more than ${input.discountAnomalies === 1 ? "its" : "their"} listed price; no discount was counted.`);
 
+  const lineCents = (key: string) => [...expenseGroups.flatMap((g) => g.lines)].find((l) => l.key === key)?.cents ?? 0;
+  const netSales = revenue.netSales.total;
   return {
     label: input.label,
     salesTaxInRevenue,
+    netSalesCents: netSales,
+    ratios: computeRatios({ netSalesCents: netSales, laborCents: lineCents(KEY.WAGES), productCents: lineCents("purchase"), rentCents: lineCents(KEY.RENT) }),
+    cash: {
+      taxCollectedCents: taxCollected, taxRemittedCents: remitted, tipsCents: revenue.tips.total, loanPaymentsCents: loan.cents,
+      cashDepositedCents: cashDeposits.cents, cashCollectedCents: cashCollected, ownerDrawsCents: draws.cents, ownerContributionsCents: contributions.cents,
+    },
     revenue: { lines: revenueLines, grossRevenueCents: grossRevenue },
     expenses: { groups: expenseGroups, totalCents: totalExpenses },
     netIncomeCents: grossRevenue - totalExpenses,

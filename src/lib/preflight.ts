@@ -8,7 +8,7 @@ import { getPlaid, plaidErrorSummary } from "@/lib/plaid";
 import { buildLinkTokenRequest } from "@/lib/plaid-link";
 import { parseRedirectUri } from "@/lib/plaid-config";
 import { backfillCompletedAt } from "@/lib/rules/readiness";
-import { checkEnvVars, rulesReadinessCheck, scrub, tokenKeyCheck, type Check } from "@/lib/preflight-env";
+import { autoSendCheck, checkEnvVars, rulesReadinessCheck, scrub, tokenKeyCheck, type Check } from "@/lib/preflight-env";
 
 export type { Check };
 
@@ -117,6 +117,8 @@ export async function runPreflight(opts: { context: "cli" | "server"; env?: Node
       })),
     );
   }
+
+  out.push(autoSendCheck(env));
 
   // Apps Script mailer
   if (has("APPS_SCRIPT_URL") && has("APPS_SCRIPT_SECRET")) {

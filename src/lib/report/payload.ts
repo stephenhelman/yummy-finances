@@ -1,5 +1,7 @@
 import type { MonthlyReportPayload } from "@/lib/apps-script";
 import type { Report, ReportGroup, ReportLine } from "@/lib/report/pnl";
+import { RATIO_LABELS } from "@/lib/report/ratios";
+import { KEY } from "@/lib/report/template";
 
 // Report -> the Apps Script "monthly_report" payload (Sheet tab, YTD tab and PDF all come from it, so they share this layout).
 // Amounts are integer cents. Expense lines are positive; "Less:" lines are negative so a column adds up.
@@ -39,6 +41,26 @@ export function reportToPayload(report: Report): Payload {
     push(key, g.lines);
   }
   sections.push({ key: "UNCATEGORIZED", label: report.below.uncategorized.label, subtotalLabel: report.below.uncategorized.label, subtotalCents: report.below.uncategorized.cents, header: false });
+
+  // Ratios: net sales as a memo line, then percentages the YTD tab recomputes from the same lines (never sums)
+  const where = (key: string) => {
+    for (const g of report.expenses.groups) {
+      const l = g.lines.find((x) => x.key === key);
+      if (l) return { section: g.name === null ? "EXPENSES" : groupKey(g), label: l.label };
+    }
+    return null;
+  };
+  if (report.ratios) {
+    const den = { section: "RATIOS", label: "Net sales" };
+    const refs = (keys: string[]) => keys.map(where).filter((x): x is { section: string; label: string } => !!x);
+    sections.push({ key: "RATIOS", label: "Ratios", subtotalCents: 0, noSubtotal: true });
+    lines.push({ section: "RATIOS", label: den.label, cents: report.netSalesCents });
+    const row = (label: string, pct: number | null, keys: string[]) => lines.push({ section: "RATIOS", label, cents: 0, percent: pct, ratio: { num: refs(keys), den } });
+    row(RATIO_LABELS.laborPct, report.ratios.laborPct, [KEY.WAGES]);
+    row(RATIO_LABELS.productPct, report.ratios.productPct, ["purchase"]);
+    row(RATIO_LABELS.primePct, report.ratios.primePct, [KEY.WAGES, "purchase"]);
+    row(RATIO_LABELS.rentPct, report.ratios.rentPct, [KEY.RENT]);
+  }
 
   return { sections, lines, netCents: report.netIncomeCents, netAfterSection: "TOTAL_EXPENSES", cashNotes: report.cashNotes, warnings: report.warnings };
 }

@@ -14,7 +14,7 @@ import { KINDS } from "@/lib/rules/types";
 const KIND_SET = new Set<string>(KINDS);
 type Business = { id: string; timezone: string; salesTaxInRevenue: boolean };
 
-export type LoadedReport = { report: Report; source: "live" | "snapshot"; status: "DRAFT" | "LOCKED" };
+export type LoadedReport = { report: Report; source: "live" | "snapshot"; status: "DRAFT" | "LOCKED"; lockedAt?: Date | null; emailSentAt?: Date | null };
 
 export async function loadReport(business: Business, month: string): Promise<LoadedReport> {
   await requireClassification(db, business.id);
@@ -22,10 +22,16 @@ export async function loadReport(business: Business, month: string): Promise<Loa
   const snap = await db.monthSnapshot.findUnique({ where: { businessId_month: { businessId: business.id, month } } });
   if (snap?.status === "LOCKED") {
     const stored = asReport(snap.dataJson);
-    if (stored) return { report: stored, source: "snapshot", status: "LOCKED" };
+    if (stored) return { report: stored, source: "snapshot", status: "LOCKED", lockedAt: snap.lockedAt, emailSentAt: snap.emailSentAt };
     // locked before this layout existed: fall through and show it live, labelled
   }
 
+  const report = await buildLiveReport(business, month);
+  return { report, source: "live", status: snap?.status === "LOCKED" ? "LOCKED" : "DRAFT", lockedAt: snap?.lockedAt, emailSentAt: snap?.emailSentAt };
+}
+
+/** The month as it would be reported right now, from the live data (never from a snapshot). */
+export async function buildLiveReport(business: Business, month: string): Promise<Report> {
   const { start, end } = monthBounds(month, business.timezone);
   const civil = { gte: new Date(`${month}-01T00:00:00Z`), lt: nextMonth(month) };
 
@@ -58,11 +64,10 @@ export async function loadReport(business: Business, month: string): Promise<Loa
     amountCents: t.amountCents, kind: t.kind && KIND_SET.has(t.kind) ? (t.kind as Kind) : null, categoryId: t.categoryId, reviewStatus: t.reviewStatus, normalizedMerchant: t.normalizedMerchant, raw: t.rawDescription,
   }));
 
-  const report = buildReport({
+  return buildReport({
     label: month, revenue, discountsCents: discounts.discountCents, ordersMissing: discounts.ordersMissing, discountAnomalies: discounts.anomalies,
     categories: reportCats, txns, salesTaxInRevenue: business.salesTaxInRevenue,
   });
-  return { report, source: "live", status: snap?.status === "LOCKED" ? "LOCKED" : "DRAFT" };
 }
 
 function nextMonth(month: string): Date {

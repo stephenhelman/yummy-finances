@@ -21,7 +21,7 @@ async function main() {
     console.log(`           unknownTender ${p.unknownTender}  testMode ${p.testMode}  lateCreated ${p.lateCreated}  updatedInLockedMonth ${p.updatedInLockedMonth}`);
     console.log(`  refunds  fetched ${r.fetched}  created ${r.created}  updated ${r.updated}  unchanged ${r.unchanged}  outsideWindow ${r.outsideWindow}`);
     console.log(`           unknownTender ${r.unknownTender}  lateCreated ${r.lateCreated}  updatedInLockedMonth ${r.updatedInLockedMonth}`);
-    if (m.orders) console.log(`  orders   fetched ${m.orders.fetched}  created ${m.orders.created}  updated ${m.orders.updated}  unchanged ${m.orders.unchanged}  withDiscount ${m.orders.withDiscount}`);
+    if (m.orders) console.log(`  orders   fetched ${m.orders.fetched}  created ${m.orders.created}  updated ${m.orders.updated}  unchanged ${m.orders.unchanged}  withDiscount ${m.orders.withDiscount}  by id ${m.orders.byId}  still missing ${m.orders.stillMissing}`);
     if (p.updatedInLockedMonth || r.updatedInLockedMonth) console.log("  WARNING: rows in a LOCKED month changed in Clover; the snapshot is unchanged.");
   }
   console.log(`\nRefunds linked now: ${report.refundsLinked}, unlinked (payment not in DB): ${report.refundsUnlinked}`);

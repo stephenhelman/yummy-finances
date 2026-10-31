@@ -11,7 +11,15 @@ const isInt = (n: unknown): n is number => typeof n === "number" && Number.isInt
 export function asReport(json: unknown): Report | null {
   const r = json as Partial<Report> | null;
   if (!r || typeof r !== "object" || !r.revenue || !Array.isArray(r.revenue.lines) || !r.expenses || !Array.isArray(r.expenses.groups) || !r.below || !Array.isArray(r.below.groups) || !isInt(r.netIncomeCents)) return null;
-  return r as Report;
+  // snapshots written before these existed: fill what can be derived, zero the rest
+  const full = r as Report;
+  const total = full.revenue.lines.find((l) => l.key === "total-sales")?.cents ?? 0;
+  const returns = full.revenue.lines.find((l) => l.key === "sales-returns")?.cents ?? 0;
+  const disc = full.revenue.lines.find((l) => l.key === "discounts")?.cents ?? 0;
+  full.netSalesCents ??= total - returns - disc;
+  full.ratios ??= { laborPct: null, productPct: null, primePct: null, rentPct: null };
+  full.cash ??= { taxCollectedCents: 0, taxRemittedCents: 0, tipsCents: 0, loanPaymentsCents: 0, cashDepositedCents: 0, cashCollectedCents: 0, ownerDrawsCents: 0, ownerContributionsCents: 0 };
+  return full;
 }
 
 /** Maps a LOCKED snapshot to the Apps Script "monthly_report" payload. Throws on a draft or malformed data. */
@@ -36,4 +44,11 @@ export async function sendMonthlyReport(
   opts?: AppsScriptOptions,
 ): Promise<void> {
   await callAppsScript({ type: "monthly_report", ...buildMonthlyReportPayload(snapshot, business) }, opts);
+}
+
+/** A TEST payload for any report (live or locked): owner only, flagged so the script writes it to the TEST workbook and labels everything TEST. */
+export function buildTestPayload(report: Report, business: ReportBusiness, month: string): MonthlyReportPayload {
+  const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(month);
+  if (!m) throw new Error(`Invalid month: ${month}`);
+  return { year: Number(m[1]), month: Number(m[2]), businessName: business.name, ...reportToPayload(report), recipients: [business.ownerEmail], test: true };
 }

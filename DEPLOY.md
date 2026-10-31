@@ -101,9 +101,31 @@ DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run db:status 
 
 On **production** the template and the move of your old categories into it happen in **one step**: the [Rules release](#rules-release) (the `apply-rules` call) seeds the template, stores the rules with their template categories, moves legacy categories on rules and on your own picks to the equivalent template line, re-sorts the rest, and only then writes its "backfill complete" marker. Production therefore never sits with old categories archived and nothing mapped. `npm run categories:seed` refuses `--target prod` for this reason; it exists for dev.
 
-After the release, pull Clover orders (they carry the discounts): `npm run sync:clover -- --month=YYYY-MM` for the current month, and for each earlier month you want discounts for (each run covers that month and the two before it). A paid order with no stored detail shows as a warning on the report instead of being silently left out.
+After the release, pull Clover orders (they carry the discounts). Clover's order **list** only returns roughly the last 90 days, so older orders are fetched by id (50 at a time) from the payments we already have. `npm run sync:clover -- --month=YYYY-MM` does this for the month and the two before it (up to 2,000 orders per month per run); for a whole year, including last year's line on the Year page, run the one-time backfill (it refuses unless `DIRECT_URL` is the allowlisted endpoint for `--target`, default dev):
+
+```bash
+DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run sync:clover-year -- --year=2025 --target prod
+DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run sync:clover-year -- --year=2026 --target prod
+```
+
+It is safe to repeat and to interrupt. A paid order with no stored detail shows as a warning on the report (Discounts may be understated; Net Income is not affected, because payments are already after discounts) instead of being silently left out.
 
 Before the first production release, read the proposal for the data you actually have: `npm run propose:mapping -- --target dev` (read-only; it writes `probe-output/category-mapping-proposal.md`).
+
+## Closing a month: Lock & send, and the monthly jobs
+
+**By hand** (Reports → a month): **Lock & send…** opens a confirm page that shows the numbers and every warning (you tick a box to say you've read them), then locks the month and emails the PDF and the Sheet link to the owner and cc. It is blocked for the current month and for a month that ended fewer than 3 days ago (late transactions). If sending fails the month stays **locked** and says "not sent": press **Re-send**. **Re-send** always sends the stored snapshot, never today's numbers. **Send test report** goes to the owner only, into a separate "Yummy Finances TEST {year}" workbook, and everything in it says TEST; it locks nothing.
+
+**Automatically**, both **off** unless `REPORTS_AUTO_SEND=true` (set it in Vercel only after a test report has looked right; `npm run preflight` shows whether it is on). `vercel.json` schedules them (UTC; 15:00 UTC is 9 am in El Paso in summer, 8 am in winter):
+
+| When | Route | What it does |
+|---|---|---|
+| 3rd | `/api/cron/review-nudge` | Emails the owner how many of last month's bank transactions still need review (nothing if none). |
+| 5th | `/api/cron/monthly-close` | Sync (banks and Clover), then lock and send last month's report. It **refuses** to lock a month that still has unreviewed transactions, or when a bank needs attention, or when a sync failed: it emails a notice saying why and locks nothing. |
+
+Both are idempotent per month and are authenticated with `CRON_SECRET`, which Vercel Cron sends automatically. Check one without waiting: `curl -s -H "Authorization: Bearer $CRON_SECRET" https://<project>.vercel.app/api/cron/monthly-close` returns `{"ok":true,"status":"disabled"}` while it is off.
+
+**The Apps Script must be updated first.** The `notice` type and test reports need a **new version of the existing deployment** (same `/exec` URL): follow "Changing the script later" in `apps-script/README.md`.
 
 ## 3. Seed production
 

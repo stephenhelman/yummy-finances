@@ -42,16 +42,16 @@ const TZ = "America/Denver";
 const groupSort = (g: string | null) => (g === null ? -1 : GROUP_ORDER.indexOf(g));
 const cats: ReportCategory[] = TEMPLATE.map((c, i) => ({ id: c.key, key: c.key, name: c.name, groupName: c.group, groupSort: groupSort(c.group), treatment: c.treatment, showWhenZero: true, archived: false, sortOrder: i }));
 const payment = (amount: number, tax: number) => ({ amountCents: amount, taxCents: tax, tipCents: 0, isCash: false, tenderLabel: "Credit Card", result: "SUCCESS", excluded: false, saleTime: new Date("2026-09-10T18:00:00Z") });
-const mk = (month: string, sales: number, rent: number) =>
+const mk = (month: string, sales: number, rent: number, wages = 0) =>
   buildReport({
     label: month, salesTaxInRevenue: false, discountsCents: 100, categories: cats,
     revenue: computeRevenue({ month, timezone: TZ, payments: [payment(sales + 80, 80)].map((p) => ({ ...p, saleTime: new Date(`${month}-10T18:00:00Z`) })), refunds: [] }),
-    txns: [{ amountCents: rent, kind: "EXPENSE", categoryId: "rent", reviewStatus: "REVIEWED", normalizedMerchant: "R", raw: "R" }],
+    txns: [{ amountCents: rent, kind: "EXPENSE", categoryId: "rent", reviewStatus: "REVIEWED", normalizedMerchant: "R", raw: "R" }, ...(wages ? [{ amountCents: wages, kind: "EXPENSE" as const, categoryId: "wages", reviewStatus: "REVIEWED" as const, normalizedMerchant: "W", raw: "W" }] : [])],
   });
 
 const book = new FakeBook();
-for (const [month, sales, rent] of [["2026-08", 10_000, 4_000], ["2026-09", 12_000, 4_100]] as const) {
-  const report = mk(month, sales, rent);
+for (const [month, sales, rent, wages] of [["2026-08", 10_000, 4_000, 3_000], ["2026-09", 12_000, 4_100, 6_000]] as const) {
+  const report = mk(month, sales, rent, wages);
   const payload = reportToPayload(report);
   api.writeMonthTab_(book, month, "Yummy", { ...payload, year: 2026, month: Number(month.slice(5)) }, report.warnings, report.cashNotes);
 }
@@ -69,7 +69,7 @@ const amountOf = (t: FakeSheet, label: string) => Number(t.rows.find((r) => Stri
 assert.equal(amountOf(tab, "Less: Discounts and Allowances"), -1, "deductions are negative so a column adds up");
 assert.equal(amountOf(tab, "Rent"), 41);
 assert.equal(amountOf(tab, "Gross Revenue"), (12_000 + 100 - 100) / 100);
-assert.equal(amountOf(tab, "Net Income"), (12_000 - 4_100) / 100);
+assert.equal(amountOf(tab, "Net Income"), (12_000 - 4_100 - 6_000) / 100);
 
 // YTD follows the same layout, one column per month plus a total
 const ytd = book.getSheetByName("YTD Summary")!;
@@ -79,7 +79,24 @@ let y = -1;
 for (const l of ["Revenue", "Total Revenue/Sales", "Gross Revenue", "Expenses", "Wages and Benefits", "Rent", "Sales/Food", "Total Sales/Food", "Total Expenses", "Net Income", "Not part of profit and loss", "Other", "Payments", "Total Other", "Personal", "Total Personal", "Uncategorized"]) { const i = yl.indexOf(l, y + 1); assert.ok(i > y, `YTD has "${l}" in order: ${yl.join(" | ")}`); y = i; }
 const ytdRow = (label: string) => ytd.rows.find((r) => String(r[0]).trim() === label)!;
 assert.deepEqual(ytdRow("Rent").slice(1), [40, 41, 81]);
-assert.deepEqual(ytdRow("Net Income").slice(1), [(10_000 - 4_000) / 100, (12_000 - 4_100) / 100, 60 + 79]);
+assert.deepEqual(ytdRow("Net Income").slice(1), [(10_000 - 4_000 - 3_000) / 100, (12_000 - 4_100 - 6_000) / 100, 30 + 19]);
 assert.ok(yl.indexOf("Net Income") < yl.indexOf("Not part of profit and loss"), "YTD keeps Net Income under Total Expenses");
+
+// ratios: shown as percentages per month, and on the YTD tab recomputed from totals (never summed)
+const pctOf = (t: FakeSheet, label: string) => t.rows.find((r) => String(r[0]).trim().startsWith(label));
+assert.equal(Number(pctOf(tab, "Labor %")![1]), 0.5, "Sept labor % = wages 60 / net sales 120");
+assert.equal(Number(pctOf(book.getSheetByName("2026-08")!, "Labor %")![1]), 0.3);
+assert.equal(Number(pctOf(tab, "Rent %")![1]), 41 / 120);
+assert.equal(Number(pctOf(tab, "Prime cost %")![1]), 0.5, "no Purchase this month: prime = labor");
+assert.equal(Number(tab.rows.find((r) => String(r[0]).trim() === "Net sales")![1]), 120);
+const yl2 = ytd.rows.map((r) => String(r[0]).trim());
+for (const l of ["Ratios", "Net sales"]) assert.ok(yl2.includes(l), `YTD has "${l}"`);
+const lab = ytd.rows.find((r) => String(r[0]).trim().startsWith("Labor %"))!;
+assert.deepEqual(lab.slice(1, 3), [0.3, 0.5], "the month columns carry each month's ratio");
+assert.equal(lab[3], (30 + 60) / (100 + 120), "the YTD total is total wages over total net sales, not 0.3 + 0.5 and not their average (0.4)");
+assert.notEqual(lab[3], 0.4);
+const rentRow = ytd.rows.find((r) => String(r[0]).trim().startsWith("Rent %"))!;
+assert.equal(rentRow[3], (40 + 41) / 220);
+assert.ok(yl2.indexOf("Ratios") > yl2.indexOf("Uncategorized"), "ratios come last, as on the Year page");
 
 console.log("report sheet layout: all checks passed");

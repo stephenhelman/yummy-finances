@@ -1,5 +1,6 @@
 import { formatCents } from "@/lib/money";
 import type { Report, ReportGroup, ReportLine } from "@/lib/report/pnl";
+import { RATIO_LABELS, formatPct } from "@/lib/report/ratios";
 
 // The accountant's P&L, laid out for a phone: label left, amount right. Used by the Reports page and the draft preview.
 
@@ -50,6 +51,17 @@ export function ReportView({ report }: { report: Report }) {
         {report.below.groups.map((g) => <Group key={g.name} group={g} />)}
         <Row line={report.below.uncategorized} indent={false} strong />
       </section>
+
+      {report.ratios ? (
+        <section className="card pl" aria-labelledby="ratios-h">
+          <h2 id="ratios-h">Ratios</h2>
+          <p className="small muted">Against net sales: after discounts and returns, before tax.</p>
+          <Row line={{ label: "Net sales", cents: report.netSalesCents }} indent={false} strong />
+          {(["laborPct", "productPct", "primePct", "rentPct"] as const).map((k) => (
+            <div key={k} className="pl-row pl-indent"><span className="pl-label">{RATIO_LABELS[k]}</span><span className="num pl-amount">{formatPct(report.ratios[k])}</span></div>
+          ))}
+        </section>
+      ) : null}
 
       <section className="card" aria-labelledby="notes-h">
         <h2 id="notes-h">Cash notes</h2>

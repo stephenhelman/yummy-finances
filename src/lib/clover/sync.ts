@@ -17,6 +17,10 @@ import { mapOrder, type OrderRow } from "@/lib/report/discounts";
  *  time, so a later month's query will not return a payment uploaded late from an offline device. */
 export const LOOKBACK_MONTHS = 2;
 
+/** Clover's order LIST only returns recent orders (about 90 days); an older order can still be fetched by its id. */
+export const ORDERS_BY_ID_PER_MONTH = 2000;
+const ORDER_BATCH = 50;
+
 type Counts = { fetched: number; created: number; updated: number; unchanged: number; outsideWindow: number; updatedInLockedMonth: number };
 
 export type CloverMonthReport = {
@@ -27,7 +31,7 @@ export type CloverMonthReport = {
   payments: Counts & { unknownTender: number; testMode: number; lateCreated: number };
   refunds: Counts & { unknownTender: number; lateCreated: number };
   /** Orders, kept only to report discounts (see src/lib/report/discounts.ts). */
-  orders?: Pick<Counts, "fetched" | "created" | "updated" | "unchanged"> & { withDiscount: number };
+  orders?: Pick<Counts, "fetched" | "created" | "updated" | "unchanged"> & { withDiscount: number; /** fetched one by one because the list no longer returns them */ byId: number; stillMissing: number };
 };
 
 export type CloverSyncReport = {
@@ -65,8 +69,11 @@ export async function syncCloverMonth(args: {
   month: string;
   client?: CloverClient;
   now?: Date;
+  /** Most orders to fetch one by one per month (the list can't return old ones). Infinity for a backfill. */
+  maxOrdersById?: number;
 }): Promise<CloverSyncReport> {
   const { businessId, timezone, month } = args;
+  const maxOrdersById = args.maxOrdersById ?? ORDERS_BY_ID_PER_MONTH;
   const client = args.client ?? CloverClient.fromEnv();
   const now = args.now ?? new Date();
 
@@ -100,7 +107,7 @@ export async function syncCloverMonth(args: {
 
   const reports: CloverMonthReport[] = [];
   for (const m of months) {
-    reports.push(await syncOneMonth({ businessId, timezone, month: m, client, tenders, lockedMonths, openMonth }));
+    reports.push(await syncOneMonth({ businessId, timezone, month: m, client, tenders, lockedMonths, openMonth, maxOrdersById }));
   }
 
   // Link refunds to their payments (set-based, idempotent). A refund can reference a payment
@@ -127,8 +134,9 @@ async function syncOneMonth(ctx: {
   tenders: ReadonlyMap<string, TenderRow>;
   lockedMonths: ReadonlySet<string>;
   openMonth: string;
+  maxOrdersById: number;
 }): Promise<CloverMonthReport> {
-  const { businessId, timezone, month, client, tenders, lockedMonths, openMonth } = ctx;
+  const { businessId, timezone, month, client, tenders, lockedMonths, openMonth, maxOrdersById } = ctx;
   const { start, end } = monthBounds(month, timezone);
   const inWindow = (d: Date) => d >= start && d < end;
 
@@ -198,6 +206,9 @@ async function syncOneMonth(ctx: {
   if (newO.length) await db.cloverOrder.createMany({ data: newO.map((o) => ({ businessId, ...o, discountNames: o.discountNames })), skipDuplicates: true });
   if (updO.length) await updateInChunks(updO, (o) => db.cloverOrder.update({ where: { businessId_cloverId: { businessId, cloverId: o.cloverId } }, data: { ...o } }));
 
+  // Orders the list didn't return (older than its window) but that a stored SUCCESS payment points at: fetch them by id.
+  const byId = await fetchMissingOrders({ businessId, client, start, end, max: maxOrdersById });
+
   return {
     month,
     startUtc: start.toISOString(),
@@ -226,6 +237,42 @@ async function syncOneMonth(ctx: {
       unknownTender: refunds.filter((r) => r.cloverPaymentId && !r.tenderLabel).length,
       lateCreated: newR.filter((r) => inLockedMonth(r.saleTime)).length,
     },
-    orders: { fetched: orders.length, created: newO.length, updated: updO.length, unchanged: orders.length - newO.length - updO.length, withDiscount: orders.filter((o) => o.hasDiscount).length },
+    orders: { fetched: orders.length, created: newO.length + byId.created, updated: updO.length, unchanged: orders.length - newO.length - updO.length, withDiscount: orders.filter((o) => o.hasDiscount).length + byId.withDiscount, byId: byId.created, stillMissing: byId.stillMissing },
   };
+}
+
+/**
+ * Orders for this month's successful payments that we have no stored order for, fetched in batches of 50 ids (the client backs off
+ * on 429). Bounded by `max` per call so a routine sync stays quick; a backfill passes Infinity and is simply re-run.
+ */
+async function fetchMissingOrders(args: { businessId: string; client: CloverClient; start: Date; end: Date; max: number }): Promise<{ created: number; withDiscount: number; stillMissing: number }> {
+  const { businessId, client, start, end, max } = args;
+  const paid = await db.cloverPayment.findMany({ where: { businessId, saleTime: { gte: start, lt: end }, result: "SUCCESS", excluded: false, orderId: { not: null } }, select: { orderId: true } });
+  const ids = [...new Set(paid.map((p) => p.orderId!))];
+  const have = new Set<string>();
+  for (let i = 0; i < ids.length; i += 1000) {
+    for (const o of await db.cloverOrder.findMany({ where: { businessId, cloverId: { in: ids.slice(i, i + 1000) } }, select: { cloverId: true } })) have.add(o.cloverId);
+  }
+  const missing = ids.filter((id) => !have.has(id));
+  const todo = missing.slice(0, max);
+  const rows: OrderRow[] = [];
+  let withDiscount = 0;
+  // 50 ids per request: Clover accepts `id in ('A','B',...)` (quoted; unquoted or bracketed is a 400)
+  for (let i = 0; i < todo.length; i += ORDER_BATCH) {
+    const batch = todo.slice(i, i + ORDER_BATCH);
+    const got = await client.getPage("/orders", { limit: ORDER_BATCH, expand: ORDER_EXPAND, filter: [`id in (${batch.map((id) => `'${id.replace(/'/g, "")}'`).join(",")})`] });
+    for (const raw of got) {
+      try {
+        const r = mapOrder(raw);
+        rows.push(r);
+        if (r.hasDiscount) withDiscount++;
+      } catch {
+        /* an order we can't read stays "missing" and shows as a warning on the report */
+      }
+    }
+    if (rows.length >= 200) await db.cloverOrder.createMany({ data: rows.splice(0).map((o) => ({ businessId, ...o, discountNames: o.discountNames })), skipDuplicates: true });
+  }
+  if (rows.length) await db.cloverOrder.createMany({ data: rows.map((o) => ({ businessId, ...o, discountNames: o.discountNames })), skipDuplicates: true });
+  const stored = await db.cloverOrder.count({ where: { businessId, cloverId: { in: todo } } });
+  return { created: stored, withDiscount, stillMissing: missing.length - stored };
 }

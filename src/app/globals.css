@@ -471,3 +471,38 @@ select.input { padding-right: 8px; }
 .pick-list > li { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; }
 .pick-list > li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .pick-list .row { flex-wrap: nowrap; gap: 0; flex: none; }
+
+/* ---------- year to date ---------- */
+
+.year-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: inherit; text-decoration: none; }
+.year-link:hover { background: var(--surface-2); }
+.yr-select { width: auto; min-width: 110px; }
+
+.trend { margin: 0; }
+.trend-svg { width: 100%; height: auto; display: block; }
+.trend-grid { stroke: var(--border); stroke-width: 1; }
+.trend-zero { stroke: var(--ink-2); stroke-width: 1; }
+.trend-tick { fill: var(--ink-2); font-size: 10px; font-variant-numeric: tabular-nums; }
+.trend-legend { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.8125rem; }
+.trend-legend li { display: inline-flex; align-items: center; gap: 6px; }
+
+.yr-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); -webkit-overflow-scrolling: touch; }
+.yr-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.yr { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 0.8125rem; }
+.yr th, .yr td { padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.yr thead th { position: sticky; top: 0; z-index: 2; background: var(--surface-2); font-weight: 700; }
+.yr .yr-label { position: sticky; left: 0; z-index: 1; background: var(--surface); text-align: left; font-weight: 500; min-width: 150px; max-width: 150px; white-space: normal; line-height: 1.25; box-shadow: 1px 0 0 var(--border); }
+.yr thead .yr-label { z-index: 3; background: var(--surface-2); }
+.yr .yr-n { text-align: right; min-width: 76px; }
+.yr-draft { display: block; font-size: 0.6875rem; font-weight: 600; color: var(--warn); }
+.yr .yr-ytd { background: var(--surface-2); border-left: 2px solid var(--accent); font-weight: 700; }
+.yr thead .yr-ytd { background: var(--accent); color: var(--accent-ink); border-left-color: var(--accent); }
+.yr-indent { padding-left: 22px !important; }
+.yr-section th, .yr-section td { background: var(--surface-2); font-weight: 700; }
+.yr-section .yr-label { background: var(--surface-2); }
+.yr-group th { font-weight: 700; color: var(--ink-2); }
+.yr-subtotal th, .yr-subtotal td, .yr-total th, .yr-total td { font-weight: 700; border-top: 1px solid var(--ink-2); }
+.yr-net th, .yr-net td { font-weight: 800; background: var(--surface-2); }
+.yr-net .yr-label { background: var(--surface-2); }
+.yr-computed th, .yr-computed td { font-style: italic; color: var(--ink-2); }
+.yr-ratio .yr-n, .yr-memo .yr-n { color: var(--ink); }

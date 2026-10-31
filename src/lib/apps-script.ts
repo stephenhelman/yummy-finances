@@ -17,18 +17,28 @@ export type MonthlyReportPayload = {
     /** true = lines only, no subtotal row. Default false. */
     noSubtotal?: boolean;
   }[];
-  lines: { section: string; label: string; cents: number }[];
+  lines: {
+    section: string;
+    label: string;
+    cents: number;
+    /** A ratio row: shown as a percentage (a fraction, null = n/a). The YTD tab recomputes it from the lines it names, never sums it. */
+    percent?: number | null;
+    ratio?: { num: { section: string; label: string }[]; den: { section: string; label: string } };
+  }[];
   netCents?: number;
   /** Print Net Income right after this section (default: after the last one). */
   netAfterSection?: string;
   cashNotes: string[];
   warnings: string[];
   recipients: string[];
+  /** A TEST send: goes to a separate "Yummy Finances TEST" workbook, the title, PDF name, subject and email all say TEST. */
+  test?: boolean;
 };
 
 export type AppsScriptRequest =
   | { type: "ping" }
   | { type: "login_email"; to: string; link: string; expiresMinutes: number }
+  | { type: "notice"; to: string[]; subject: string; body: string }
   | ({ type: "monthly_report" } & MonthlyReportPayload);
 
 export type AppsScriptOptions = {

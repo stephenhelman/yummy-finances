@@ -164,6 +164,7 @@ export function ReportsCard({ month }: { month: string }) {
       <p className="muted">The report as your accountant lays it out, for {monthLabel(month, true)} so far.</p>
       <div className="row">
         <Link href={`/admin/reports/${month}`} className="btn btn-secondary">Open draft</Link>
+        <Link href="/admin/reports/year" className="btn btn-ghost">Year to date</Link>
         <Link href="/admin/reports" className="btn btn-ghost">All months</Link>
       </div>
     </section>

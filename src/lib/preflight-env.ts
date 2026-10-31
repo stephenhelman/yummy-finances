@@ -220,6 +220,16 @@ export function tokenKeyCheck(
 }
 
 /** Has the rules release run on this database? A warning (not a failure): older deploys predate it. */
+/** Automatic monthly sending (the 3rd review nudge, the 5th sync -> lock -> send). Off by default; ON needs the mailer and the cron secret. */
+export function autoSendCheck(env: Env): Check {
+  const on = env.REPORTS_AUTO_SEND === "true";
+  if (!on) return { name: "reports: automatic sending", status: "info", message: env.REPORTS_AUTO_SEND ? `REPORTS_AUTO_SEND is "${env.REPORTS_AUTO_SEND}": only "true" turns it on, so it is OFF` : "OFF (set REPORTS_AUTO_SEND=true to turn on the 3rd and 5th jobs)" };
+  const missing = ["APPS_SCRIPT_URL", "APPS_SCRIPT_SECRET", "CRON_SECRET"].filter((k) => !env[k]?.trim());
+  return missing.length
+    ? { name: "reports: automatic sending", status: "fail", message: `ON, but ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set: the jobs would fail` }
+    : { name: "reports: automatic sending", status: "pass", message: "ON: review nudge on the 3rd, sync -> lock -> send on the 5th (a month with unreviewed transactions is never locked automatically)" };
+}
+
 export function rulesReadinessCheck(activeRules: number, backfillAt: Date | null): Check {
   const name = "rules: classification";
   if (activeRules === 0) {

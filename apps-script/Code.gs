@@ -21,6 +21,7 @@ function doPost(e) {
       case 'ping': return json_({ ok: true });
       case 'login_email': return json_(handleLoginEmail_(req));
       case 'monthly_report': return json_(handleMonthlyReport_(req));
+      case 'notice': return json_(handleNotice_(req));
       default: return json_({ ok: false, error: 'unknown type' });
     }
   } catch (err) {
@@ -85,6 +86,29 @@ function handleLoginEmail_(req) {
   return { ok: true };
 }
 
+// ------------------------------------------------------------- notice
+
+/**
+ * A plain notification email (review nudge, "the report was not sent because ..."). Payload: { to: string[], subject, body }.
+ * Plain text only: the body is escaped, never treated as HTML.
+ */
+function handleNotice_(req) {
+  var to = Array.isArray(req.to) ? req.to : [];
+  if (!to.length || to.length > 10 || !to.every(function (r) { return typeof r === 'string' && EMAIL_RE.test(r); })) throw new Error('invalid recipients');
+  var subject = typeof req.subject === 'string' ? req.subject.replace(/[\r\n]+/g, ' ').trim() : '';
+  var body = typeof req.body === 'string' ? req.body : '';
+  if (!subject || subject.length > 150) throw new Error('invalid subject');
+  if (!body || body.length > 5000) throw new Error('invalid body');
+  MailApp.sendEmail({
+    to: to.join(','),
+    subject: subject,
+    body: body,
+    htmlBody: '<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#222">' + '<h2 style="margin:0 0 16px;color:#b3265f">' + esc_(BRAND) + '</h2>' + '<p style="white-space:pre-wrap">' + esc_(body) + '</p></div>',
+    name: BRAND,
+  });
+  return { ok: true };
+}
+
 // ------------------------------------------------------------- monthly_report
 
 /**
@@ -92,7 +116,8 @@ function handleLoginEmail_(req) {
  *  sections: [{key, label, subtotalCents, subtotalLabel?, header? (default true), noSubtotal? (default false)}]
  *  lines:    [{section, label, cents}]
  *  netCents (optional), netAfterSection? (print Net Income after this section; default: last),
- *  cashNotes: string[], warnings: string[], recipients: string[]
+ *  cashNotes: string[], warnings: string[], recipients: string[],
+ *  test? (true = a TEST send: separate "Yummy Finances TEST <year>" workbook; the title, PDF name, subject and email all say TEST)
  */
 function handleMonthlyReport_(req) {
   var year = Number(req.year), month = Number(req.month);
@@ -101,37 +126,39 @@ function handleMonthlyReport_(req) {
   var recipients = Array.isArray(req.recipients) ? req.recipients : [];
   if (!recipients.length || recipients.length > 10 || !recipients.every(function (r) { return typeof r === 'string' && EMAIL_RE.test(r); })) throw new Error('invalid recipients');
   var tab = year + '-' + (month < 10 ? '0' : '') + month;
+  var test = req.test === true;
   var business = String(req.businessName || BRAND);
   var warnings = (req.warnings || []).map(String);
   var cashNotes = (req.cashNotes || []).map(String);
 
-  var ss = getOrCreateWorkbook_(year);
-  var sheet = writeMonthTab_(ss, tab, business, req, warnings, cashNotes);
+  var ss = getOrCreateWorkbook_(year, test);
+  var sheet = writeMonthTab_(ss, tab, test ? 'TEST - NOT A REAL REPORT - ' + business : business, req, warnings, cashNotes);
   rebuildYtd_(ss);
   SpreadsheetApp.flush();
 
-  var pdf = exportTabPdf_(ss, sheet, business + ' P&L ' + tab + '.pdf');
+  var pdf = exportTabPdf_(ss, sheet, (test ? 'TEST ' : '') + business + ' P&L ' + tab + '.pdf');
   var url = ss.getUrl();
   var monthName = Utilities.formatDate(new Date(year, month - 1, 1), Session.getScriptTimeZone(), 'MMMM yyyy');
   var html =
     '<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#222">' +
     '<h2 style="margin:0 0 16px;color:#b3265f">' + esc_(business) + '</h2>' +
+    (test ? '<p style="padding:8px 12px;background:#fff3cd;border:1px solid #a15c00"><b>TEST.</b> This is a test copy to check the layout. It is not the real report and nothing was locked.</p>' : '') +
     '<p>The profit &amp; loss report for <b>' + esc_(monthName) + '</b> is attached as a PDF.</p>' +
     (warnings.length ? '<p style="color:#a15c00"><b>' + warnings.length + ' warning(s)</b> are listed at the top of the report.</p>' : '') +
     '<p><a href="' + esc_(url) + '">Open the ' + year + ' workbook</a></p></div>';
   MailApp.sendEmail({
     to: recipients.join(','),
-    subject: business + ' P&L, ' + monthName,
+    subject: (test ? '[TEST] ' : '') + business + ' P&L, ' + monthName,
     htmlBody: html,
-    body: 'The P&L for ' + monthName + ' is attached. Workbook: ' + url,
+    body: (test ? 'TEST - not the real report. ' : '') + 'The P&L for ' + monthName + ' is attached. Workbook: ' + url,
     name: BRAND,
     attachments: [pdf],
   });
   return { ok: true, sheetUrl: url + '#gid=' + sheet.getSheetId() };
 }
 
-function getOrCreateWorkbook_(year) {
-  var name = 'Yummy Finances ' + year;
+function getOrCreateWorkbook_(year, test) {
+  var name = (test ? 'Yummy Finances TEST ' : 'Yummy Finances ') + year;
   var folderId = PropertiesService.getScriptProperties().getProperty('DRIVE_FOLDER_ID');
   var folder = folderId ? DriveApp.getFolderById(folderId) : DriveApp.getRootFolder();
   var files = folder.getFilesByName(name);
@@ -148,9 +175,9 @@ function getOrCreateWorkbook_(year) {
 function writeMonthTab_(ss, tab, business, req, warnings, cashNotes) {
   var sheet = ss.getSheetByName(tab);
   if (sheet) { sheet.clear(); } else { sheet = ss.insertSheet(tab); }
-  var rows = []; // [A label, B amount|'', C key]
+  var rows = []; // [A label, B amount|'', C key, D ratio definition (JSON) or '']
   var fmt = [];  // {row, kind}
-  function push(label, amount, key, kind) { rows.push([label, amount, key || '']); fmt.push(kind || 'line'); }
+  function push(label, amount, key, kind, def) { rows.push([label, amount, key || '', def || '']); fmt.push(kind || 'line'); }
 
   push(business + ' — Profit & Loss — ' + tab, '', '', 'title');
   if (warnings.length) {
@@ -165,7 +192,13 @@ function writeMonthTab_(ss, tab, business, req, warnings, cashNotes) {
   req.sections.forEach(function (sec) {
     var k = sec.key;
     if (sec.header !== false) push(String(sec.label || k), '', 'H|' + k, 'section');
-    (byKey[k] || []).forEach(function (l) { push('   ' + String(l.label), Number(l.cents) / 100, 'L|' + k + '|' + l.label, 'line'); });
+    (byKey[k] || []).forEach(function (l) {
+      if (l.ratio) {
+        // a ratio is shown as a percentage and RECOMPUTED (never summed) on the YTD tab from the lines it names
+        var def = JSON.stringify({ n: l.ratio.num.map(function (r) { return 'L|' + r.section + '|' + r.label; }), d: 'L|' + l.ratio.den.section + '|' + l.ratio.den.label });
+        push('   ' + String(l.label), (l.percent === null || l.percent === undefined) ? '' : Number(l.percent), 'P|' + k + '|' + l.label, 'pct', def);
+      } else push('   ' + String(l.label), Number(l.cents) / 100, 'L|' + k + '|' + l.label, 'line');
+    });
     if (!sec.noSubtotal) push(String(sec.subtotalLabel || ('Total ' + (sec.label || k))), Number(sec.subtotalCents) / 100, 'S|' + k, 'subtotal');
     push('', '', '', 'blank');
     if (req.netAfterSection === k) { pushNet(); push('', '', '', 'blank'); netDone = true; }
@@ -177,11 +210,11 @@ function writeMonthTab_(ss, tab, business, req, warnings, cashNotes) {
     cashNotes.forEach(function (n) { push(n, '', '', 'note'); });
   }
 
-  sheet.getRange(1, 1, rows.length, 3).setValues(rows);
+  sheet.getRange(1, 1, rows.length, 4).setValues(rows);
   sheet.getRange(1, 2, rows.length, 1).setNumberFormat('$#,##0.00;-$#,##0.00');
   sheet.setColumnWidth(1, 360); sheet.setColumnWidth(2, 130);
-  sheet.setColumnWidth(3, 20);
-  sheet.getRange(1, 3, rows.length, 1).setFontColor('#ffffff'); // row keys, used to rebuild YTD
+  sheet.setColumnWidth(3, 20); sheet.setColumnWidth(4, 20);
+  sheet.getRange(1, 3, rows.length, 2).setFontColor('#ffffff'); // row keys and ratio definitions, used to rebuild YTD
   fmt.forEach(function (kind, i) {
     var r = sheet.getRange(i + 1, 1, 1, 2);
     if (kind === 'title') r.setFontWeight('bold').setFontSize(14);
@@ -190,6 +223,7 @@ function writeMonthTab_(ss, tab, business, req, warnings, cashNotes) {
     else if (kind === 'section') r.setFontWeight('bold').setBackground('#f4e3ea');
     else if (kind === 'subtotal') r.setFontWeight('bold').setBorder(true, null, null, null, null, null, '#999999', SpreadsheetApp.BorderStyle.SOLID);
     else if (kind === 'net') r.setFontWeight('bold').setBackground('#e6e6e6');
+    else if (kind === 'pct') sheet.getRange(i + 1, 2).setNumberFormat('0.0%');
   });
   sheet.setHiddenGridlines(true);
   var def = ss.getSheetByName('Sheet1');
@@ -209,10 +243,11 @@ function rebuildYtd_(ss) {
   var order = {};      // section -> [line keys in first-seen order]
   var secOrder = [];   // section keys in the order the month tabs print them
   var netAfter = null; // the section Net Income follows
+  var ratioDefs = {};  // percent row key -> {n: [line keys], d: line key}
   var hasNet = false;
   months.forEach(function (m) {
     var sh = ss.getSheetByName(m);
-    var vals = sh.getRange(1, 1, sh.getLastRow(), 3).getValues();
+    var vals = sh.getRange(1, 1, sh.getLastRow(), 4).getValues();
     data[m] = {};
     var current = null;
     vals.forEach(function (r) {
@@ -221,11 +256,12 @@ function rebuildYtd_(ss) {
       data[m][key] = r[1];
       var parts = key.split('|');
       if (key === 'N') { hasNet = true; if (netAfter === null) netAfter = current; return; }
-      if (parts[0] === 'L' || parts[0] === 'S' || parts[0] === 'H') {
+      if (parts[0] === 'P' && r[3] && !ratioDefs[key]) { try { ratioDefs[key] = JSON.parse(String(r[3])); } catch (e) { /* ignore a bad definition */ } }
+      if (parts[0] === 'L' || parts[0] === 'S' || parts[0] === 'H' || parts[0] === 'P') {
         current = parts[1];
         if (secOrder.indexOf(parts[1]) < 0) secOrder.push(parts[1]);
       }
-      if (parts[0] === 'L') {
+      if (parts[0] === 'L' || parts[0] === 'P') {
         labels[key] = String(r[0]).replace(/^\s+/, '');
         var list = (order[parts[1]] = order[parts[1]] || []);
         if (list.indexOf(key) < 0) list.push(key);
@@ -243,13 +279,24 @@ function rebuildYtd_(ss) {
     row.push(sum);
     out.push(row); kinds.push(kind);
   }
+  // A ratio is recomputed from the lines it names, per month and for the Total column (the total is totals over totals, not a sum of percentages)
+  function addPctRow(label, key) {
+    var def = ratioDefs[key], row = [label], numTotal = 0, denTotal = 0;
+    months.forEach(function (m) {
+      var num = 0, den = Number(data[m][def.d]);
+      def.n.forEach(function (nk) { var v = Number(data[m][nk]); if (v === v) num += v; });
+      if (den > 0) { row.push(num / den); numTotal += num; denTotal += den; } else row.push('');
+    });
+    row.push(denTotal > 0 ? numTotal / denTotal : '');
+    out.push(row); kinds.push('pct');
+  }
   secOrder.forEach(function (k) {
     // older tabs have no header key: fall back to the subtotal's label without "Total "
     var sectionLabel = labels['H|' + k] || (labels['S|' + k] ? labels['S|' + k].replace(/^Total /, '') : '');
     if (labels['H|' + k] !== undefined || (labels['S|' + k] && (order[k] || []).length)) {
       out.push([sectionLabel].concat(months.map(function () { return ''; }), [''])); kinds.push('section');
     }
-    (order[k] || []).forEach(function (key) { addRow('   ' + labels[key], key, 'line'); });
+    (order[k] || []).forEach(function (key) { if (key.charAt(0) === 'P' && ratioDefs[key]) addPctRow('   ' + labels[key], key); else addRow('   ' + labels[key], key, 'line'); });
     if (labels['S|' + k] !== undefined) addRow(labels['S|' + k], 'S|' + k, 'subtotal');
     if (hasNet && netAfter === k) addRow('Net Income', 'N', 'net');
   });
@@ -265,6 +312,7 @@ function rebuildYtd_(ss) {
     else if (kind === 'section') r.setFontWeight('bold').setBackground('#f4e3ea');
     else if (kind === 'subtotal') r.setFontWeight('bold').setBorder(true, null, null, null, null, null, '#999999', SpreadsheetApp.BorderStyle.SOLID);
     else if (kind === 'net') r.setFontWeight('bold').setBackground('#e6e6e6');
+    else if (kind === 'pct') ytd.getRange(i + 1, 2, 1, width - 1).setNumberFormat('0.0%');
   });
   ytd.getRange(1, width, out.length, 1).setFontWeight('bold');
   ytd.setFrozenRows(1); ytd.setFrozenColumns(1);

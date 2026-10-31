@@ -39,9 +39,20 @@ Run `npm run preflight`. The `apps script: ping` line should pass. A failure mes
 - *"returned a web page, not JSON"*: the deployment is not set to "Anyone", or you used a URL that does not end in `/exec`.
 - *"unauthorized"*: the secret in Vercel/`.env` differs from the script property.
 
-## Changing the script later
+## Changing the script later: publish a NEW VERSION of the SAME deployment
 
-Editing the code does **not** change the live web app. After any edit: **Deploy → Manage deployments → pencil icon → Version: New version → Deploy**. The URL stays the same.
+Editing the code in the editor does **not** change the live web app, and creating a **New deployment** gives you a **different `/exec` URL** (which would break `APPS_SCRIPT_URL`). To update it and keep the URL:
+
+1. In the script editor, paste the new `Code.gs` over the old one (and `appsscript.json` if it changed). **Save** (Ctrl/Cmd+S).
+2. Click **Deploy → Manage deployments**.
+3. Click the **pencil (Edit)** icon on the existing **Web app** deployment (not "New deployment").
+4. In **Version**, choose **New version**. Add a short description, e.g. `notice type, TEST reports`.
+5. Leave **Execute as: Me** and **Who has access: Anyone** as they are, then click **Deploy**.
+6. Check the Web app URL shown is the **same** one as before (it ends in the same `/exec`). Nothing changes in Vercel.
+7. If Google asks for new permissions (it does when the code starts using a new service), approve them once: run `doGet` from the editor, or follow the prompt.
+8. From the repo, run `npm run preflight`: `apps script: ping` should pass. To check the new `notice` type end to end, press **Send test report** on any month in Reports (it uses `monthly_report` with `test: true`).
+
+If the app reports `unknown type`, the live deployment is still on the old version: repeat steps 2 to 5 and make sure **New version** was selected.
 
 ## What the script accepts
 
@@ -49,4 +60,5 @@ Every request is a JSON `POST` with `secret` and `type`; anything without the ri
 
 - `ping`: returns `{"ok":true}`.
 - `login_email`: `{to, link, expiresMinutes}`; sends the sign-in email.
-- `monthly_report`: `{year, month, businessName, sections[], lines[], netCents?, cashNotes[], warnings[], recipients[]}` (money as integer cents). Gets or creates the workbook `Yummy Finances {year}` in the Drive folder, creates or **replaces** the tab `YYYY-MM` (so re-sending a month never duplicates it), rebuilds the `YTD Summary` tab (one column per month, plus a total), and emails the recipients that month's tab as a PDF plus the workbook link.
+- `notice`: `{to[], subject, body}` (1 to 10 recipients, subject up to 150 characters, plain-text body up to 5,000). Sends a plain notification email: the review nudge on the 3rd, and "the report was not sent because ..." when the automatic close stops. The body is escaped, never treated as HTML.
+- `monthly_report`: `{year, month, businessName, sections[], lines[], netCents?, cashNotes[], warnings[], recipients[], test?}` (money as integer cents). Gets or creates the workbook `Yummy Finances {year}` in the Drive folder, creates or **replaces** the tab `YYYY-MM` (so re-sending a month never duplicates it), rebuilds the `YTD Summary` tab (one column per month, plus a total), and emails the recipients that month's tab as a PDF plus the workbook link. With **`test: true`** everything goes to a **separate workbook named `Yummy Finances TEST {year}`**, the tab title reads `TEST - NOT A REAL REPORT`, the PDF is named `TEST ...`, the subject starts `[TEST]` and the email says it is a test, so a test can never be mistaken for, or overwrite, a real report.

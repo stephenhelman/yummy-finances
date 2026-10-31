@@ -57,7 +57,7 @@ async function main() {
   const snap = { month: "2026-09", status: "LOCKED" as "LOCKED" | "DRAFT", dataJson: report as never };
   const p = buildMonthlyReportPayload(snap, biz);
   assert.equal(p.year, 2026); assert.equal(p.month, 9);
-  assert.deepEqual(p.sections.map((s) => [s.key, s.subtotalCents]), [["REVENUE", 1_000_000], ["EXPENSES", 150_000], ["EXP_SALES_FOOD", 300_000], ["TOTAL_EXPENSES", 450_000], ["BELOW", 0], ["BELOW_OTHER", 10_000], ["UNCATEGORIZED", 500]]);
+  assert.deepEqual(p.sections.map((s) => [s.key, s.subtotalCents]), [["REVENUE", 1_000_000], ["EXPENSES", 150_000], ["EXP_SALES_FOOD", 300_000], ["TOTAL_EXPENSES", 450_000], ["BELOW", 0], ["BELOW_OTHER", 10_000], ["UNCATEGORIZED", 500], ["RATIOS", 0]]);
   assert.equal(p.sections[0].subtotalLabel, "Gross Revenue");
   assert.equal(p.sections[3].header, false);
   assert.equal(p.netAfterSection, "TOTAL_EXPENSES");

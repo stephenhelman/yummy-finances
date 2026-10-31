@@ -36,6 +36,14 @@ export default async function ReportsPage({ searchParams }: { searchParams: Para
       <Notice notice={one(sp.notice)} error={one(sp.error)} />
       <p className="muted">The profit and loss as your accountant lays it out. Months that aren&rsquo;t locked are drafts and can still change.</p>
 
+      <Link href="/admin/reports/year" className="card year-link">
+        <span className="txn-main">
+          <span className="txn-merchant">{year} year to date</span>
+          <span className="small muted">Every month side by side, a trend chart and ratios</span>
+        </span>
+        <span className="btn btn-secondary btn-sm">Open</span>
+      </Link>
+
       <ul className="txn-list">
         {months.map((m) => {
           const locked = snaps.get(m) === "LOCKED";

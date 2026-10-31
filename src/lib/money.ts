@@ -26,3 +26,10 @@ export function centsToDecimal(cents: number): string {
   const abs = Math.abs(cents);
   return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
 }
+
+const usdWhole = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+
+/** Display only, whole dollars (wide tables). -$1,234 */
+export function formatWhole(cents: number): string {
+  return usdWhole.format(Math.round(cents / 100) + 0); // + 0: a rounded -0 must not print as -$0
+}
