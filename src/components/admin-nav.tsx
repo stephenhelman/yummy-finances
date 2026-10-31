@@ -8,6 +8,7 @@ const ITEMS = [
   { href: "/admin", label: "Dashboard", exact: true },
   { href: "/admin/review", label: "Review", exact: false, badge: true },
   { href: "/admin/transactions", label: "Transactions", exact: false },
+  { href: "/admin/reports", label: "Reports", exact: false },
   { href: "/admin/rules", label: "Rules", exact: false },
   { href: "/admin/connections", label: "Connections", exact: false },
 ] as const;
