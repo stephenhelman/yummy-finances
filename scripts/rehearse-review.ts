@@ -62,7 +62,7 @@ async function main() {
       must((await fingerprint()) === before, "undo restored every classification column of every row exactly");
 
       if (check) {
-        const refused = await classifyManually(store, { txnId: check.id, value: "pick:wages", always: true });
+        const refused = await classifyManually(store, { txnId: check.id, value: `cat:${cats.find((c) => c.key === "wages")!.id}`, always: true });
         must(!refused.ok && /Checks have no payee/.test(refused.error), "a CHECK row can't create a rule");
       } else console.log("skip (no CHECK row in the review queue)");
 
