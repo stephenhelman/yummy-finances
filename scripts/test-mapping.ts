@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { CATEGORY_MAP, KIND_DEFAULT, RULE_MAP, keyOf, manualTarget, mapDef, ruleTarget } from "../src/lib/report/mapping";
+import { CATEGORY_MAP, KIND_DEFAULT, MANUAL_REPOINTS, RULE_MAP, keyOf, manualTarget, mapDef, merchantRepoint, ruleTarget } from "../src/lib/report/mapping";
 import { TEMPLATE } from "../src/lib/report/template";
 import { ALL_RULES } from "../src/lib/rules/all";
 import { PLANNED_CATEGORY_CHANGES } from "../src/lib/rules/categories";
@@ -12,6 +12,7 @@ const templateKeys = new Set(TEMPLATE.map((c) => c.key));
 // every destination is a real template category
 for (const [from, t] of Object.entries(CATEGORY_MAP)) assert.ok(templateNames.has(t.to), `CATEGORY_MAP "${from}" -> unknown template category "${t.to}"`);
 for (const [key, t] of Object.entries(RULE_MAP)) assert.ok(templateNames.has(t.to), `RULE_MAP ${key} -> unknown template category "${t.to}"`);
+for (const m of MANUAL_REPOINTS) assert.ok(templateNames.has(m.to), `MANUAL_REPOINTS ${m.label} -> unknown template category "${m.to}"`);
 for (const [kind, t] of Object.entries(KIND_DEFAULT)) if (t) assert.ok(templateNames.has(t.to), `KIND_DEFAULT ${kind} -> unknown "${t.to}"`);
 for (const t of [...Object.values(CATEGORY_MAP), ...Object.values(RULE_MAP)]) assert.ok(templateKeys.has(keyOf(t.to)), `key for "${t.to}" exists`);
 
@@ -57,6 +58,43 @@ assert.equal(byId("seed:clover-settlement").categoryName, undefined, "reconcilia
 assert.equal(byId("seed:cash-atm-deposit").categoryName, undefined);
 assert.equal(byId("seed:checks-rent").categoryName, "Rent");
 assert.equal(byId("seed:el-paso-electric:purchase").categoryName, "Utilities");
+
+// the owner's decisions on the proposal
+const legacyOnly2 = (n: string) => legacyOnly.has(n);
+const rt = (key: string, kind: "EXPENSE" | "VENDOR_REFUND" | "OWNER_DRAW" | "OWNER_CONTRIBUTION", categoryName: string | null) => ruleTarget({ key, kind, categoryName }, legacyOnly2);
+assert.deepEqual([rt("user:always:u-haul-moving-s-tx-recurring:out", "EXPENSE", "Other operating expenses")?.to, rt("user:always:u-haul-moving-s:out", "EXPENSE", "Other COGS")?.to], ["Other Expenses: STORAGE", "Other Expenses: STORAGE"]);
+assert.deepEqual(rt("user:always:taco-cabana:out", "EXPENSE", "Other operating expenses"), { to: "Personal: Food", kind: "OWNER_DRAW" }, "Taco Cabana is personal food: it stops being a business expense");
+assert.deepEqual(rt("zelle:mamita:out", "EXPENSE", "Other operating expenses"), { to: "Personal: Misc", kind: "OWNER_DRAW" });
+assert.deepEqual(rt("zelle:mamita:in", "VENDOR_REFUND", "Other operating expenses"), { to: "Personal: Misc", kind: "OWNER_CONTRIBUTION" }, "money back from MAMITA is a contribution");
+assert.equal(rt("user:always:superior-fire-inc:out", "EXPENSE", "Other operating expenses")?.to, "Repairs");
+assert.equal(rt("user:always:dropbox-sign-mont-ca-recurring:out", "EXPENSE", "Software and subscriptions")?.to, "Office Expense: DROPBOXSERVICES");
+assert.equal(rt("user:always:hp-instant-ink:out", "EXPENSE", "Software and subscriptions")?.to, "Printing");
+assert.equal(rt("user:always:fid-bkg-svc-llc-moneyline:out", "OWNER_DRAW", null)?.to, "Personal: Misc");
+assert.deepEqual(rt("user:always:online-banking-transfer-to-sav-2870:out", "OWNER_DRAW", null), { to: "Other Transfers" }, "savings transfer stays an owner draw, reports under Other Transfers");
+assert.deepEqual(rt("user:always:temporary-credit-adjustment-on-card:in", "OWNER_CONTRIBUTION", null), { to: "Other Transfers", kind: "INTERNAL_TRANSFER" }, "a card credit adjustment is a transfer, not a contribution");
+assert.equal(rt("user:always:lowes-big:out", "EXPENSE", "Dairy & ingredients")?.to, "Materials & Supplies", "the mis-pick is corrected");
+for (const t of Object.values(RULE_MAP)) assert.ok(!t.flag, "every flag in RULE_MAP has been decided");
+// kind changes keep a rule valid (direction and category rules still hold)
+const mk = (kind: "OWNER_DRAW" | "OWNER_CONTRIBUTION" | "INTERNAL_TRANSFER", direction: "in" | "out", categoryName: string) => ({ id: "x", name: "x", pattern: "X", matchType: "EXACT" as const, target: "normalized" as const, direction, kind, categoryName, priority: 50, confirmed: true, source: "USER" as const });
+assert.deepEqual(validateRule(mk("OWNER_DRAW", "out", "Personal: Food")), []);
+assert.deepEqual(validateRule(mk("OWNER_CONTRIBUTION", "in", "Personal: Misc")), []);
+assert.deepEqual(validateRule(mk("INTERNAL_TRANSFER", "in", "Other Transfers")), []);
+
+// manual picks: the owner's choice stays, except merchants with a dedicated accountant line
+const mt = (kind: "EXPENSE" | "VENDOR_REFUND" | "OWNER_DRAW", categoryName: string | null, merchant: string) => manualTarget({ kind, categoryName, merchant }, legacyOnly2);
+assert.deepEqual([mt("EXPENSE", "Software and subscriptions", "GOOGLE YOUTUBE TV")?.to, mt("EXPENSE", "Software and subscriptions", "GOOGLE YOUTUBE TV")?.repointed], ["Telephone: Entertainment TV", "YouTube TV"]);
+assert.equal(mt("EXPENSE", "Software and subscriptions", "DROPBOX SIGN MONT CA RECURRING")?.to, "Office Expense: DROPBOXSERVICES");
+assert.equal(mt("EXPENSE", "Other operating expenses", "U HAUL MOVING S TX RECURRING")?.to, "Other Expenses: STORAGE");
+assert.equal(mt("EXPENSE", "Other COGS", "U HAUL MOVING S")?.to, "Other Expenses: STORAGE");
+assert.equal(mt("EXPENSE", "Supplies", "HP INSTANT INK")?.to, "Printing");
+assert.equal(mt("EXPENSE", "Dairy & ingredients", "LOWES BIG")?.to, "Materials & Supplies");
+assert.equal(mt("EXPENSE", "Other operating expenses", "SUPERIOR FIRE INC")?.to, "Other Costs", "no dedicated line: the owner's choice stays");
+assert.equal(mt("EXPENSE", "Other operating expenses", "TACO CABANA")?.to, "Other Costs", "manual picks are not moved by merchant rules, only by a dedicated accountant line");
+assert.equal(mt("EXPENSE", "Software and subscriptions", "AMAZON PRIME")?.to, "Dues & Subscriptions");
+assert.equal(mt("OWNER_DRAW", null, "DROPBOX")?.to, "Personal: Misc", "a Personal pick is never re-pointed (ATM and cash draws stay Personal)");
+assert.equal(mt("EXPENSE", "Wages", "U HAUL")?.to, "Other Expenses: STORAGE", "a dedicated line applies whatever legacy category it was in");
+assert.equal(mt("EXPENSE", "Rent", "U HAUL"), null, "a pick already on a template line is never touched");
+assert.equal(merchantRepoint("TAXI U HAUL"), null, "matches the merchant, not a word in the middle");
 
 // stored rules and manual picks: the rules of the road
 const legacySet = (n: string) => legacyOnly.has(n);

@@ -33,6 +33,9 @@ async function main() {
         const [jan] = await tx.$queryRaw<{ h: string }[]>`SELECT md5(string_agg("id" || coalesce("categoryId",'-') || coalesce("kind"::text,'-') || "categorySource"::text, ',' ORDER BY "id")) h FROM "BankTransaction" WHERE "date" >= '2026-01-01' AND "date" < '2026-02-01'`;
         return { manual: m.ids, expenseCents: Number(e.cents), janRows: Number(l.n), janHash: jan.h };
       };
+      // rules whose KIND changes (expense -> owner draw): their rows legitimately leave "expense", and nothing else does
+      const rekinded = ["user:always:taco-cabana:out", "zelle:mamita:out", "zelle:mamita:in"];
+      const [leaving] = await tx.$queryRaw<{ cents: bigint }[]>`SELECT COALESCE(sum(t."amountCents"),0) cents FROM "BankTransaction" t JOIN "Rule" r ON r."id" = t."ruleId" WHERE r."key" = ANY(${rekinded}) AND t."kind" IN ('EXPENSE','VENDOR_REFUND') AND t."date" >= '2026-02-01'`;
       const before = await snapshot();
       console.log(`before: ${before.manual.split(",").length} MANUAL rows, ${before.janRows} rows in the locked month`);
 
@@ -46,10 +49,24 @@ async function main() {
 
       const after = await snapshot();
       must(after.manual === before.manual, "every MANUAL pick is still MANUAL (same set of rows)");
-      must(after.expenseCents === before.expenseCents, "total expense dollars outside the locked month are unchanged (only the lines moved)");
+      must(after.expenseCents === before.expenseCents - Number(leaving.cents), `expense dollars outside the locked month are unchanged except rows that stopped being business expenses (${Number(leaving.cents) / 100})`);
       must(after.janHash === before.janHash, "the locked month's rows are byte-for-byte untouched");
       must(first.mapping.manualSkippedLocked >= 0, `manual rows skipped for the locked month: ${first.mapping.manualSkippedLocked}`);
 
+      // the owner's decisions
+      const rule = async (key: string) => (await tx.$queryRaw<{ kind: string; cat: string | null }[]>`SELECT r."kind"::text kind, c."name" cat FROM "Rule" r LEFT JOIN "Category" c ON c."id" = r."categoryId" WHERE r."key" = ${key}`)[0];
+      const taco = await rule("user:always:taco-cabana:out"), mOut = await rule("zelle:mamita:out"), mIn = await rule("zelle:mamita:in"), card = await rule("user:always:temporary-credit-adjustment-on-card:in");
+      must(taco?.kind === "OWNER_DRAW" && taco.cat === "Personal: Food", "Taco Cabana is now a Personal: Food owner draw (no longer an expense)");
+      must(mOut?.kind === "OWNER_DRAW" && mOut.cat === "Personal: Misc" && mIn?.kind === "OWNER_CONTRIBUTION" && mIn.cat === "Personal: Misc", "MAMITA Zelle is Personal: Misc (draw out, contribution in)");
+      must(card?.kind === "INTERNAL_TRANSFER" && card.cat === "Other Transfers", "the card credit adjustment is a transfer, not a contribution");
+      const wanted: [string, string, string][] = [["GOOGLE YOUTUBE TV%", "Telephone: Entertainment TV", "YouTube TV"], ["DROPBOX%", "Office Expense: DROPBOXSERVICES", "Dropbox"], ["U HAUL%", "Other Expenses: STORAGE", "U-Haul"], ["HP INSTANT INK%", "Printing", "HP Instant Ink"], ["LOWES%", "Materials & Supplies", "Lowe's"]];
+      for (const [like, line, label] of wanted) {
+        const [rows] = await tx.$queryRaw<{ n: bigint; bad: bigint; manual: bigint }[]>`SELECT count(*) n, count(*) FILTER (WHERE c."name" IS DISTINCT FROM ${line}) bad, count(*) FILTER (WHERE t."categorySource" = 'MANUAL') manual FROM "BankTransaction" t LEFT JOIN "Category" c ON c."id" = t."categoryId" WHERE t."normalizedMerchant" LIKE ${like} AND t."kind" IN ('EXPENSE','VENDOR_REFUND') AND t."date" >= '2026-02-01'`;
+        must(Number(rows.bad) === 0, `every ${label} row outside the locked month is on ${line} (${rows.n}, ${rows.manual} of them MANUAL picks)`);
+      }
+      must(first.mapping.manualRepointed > 0 && second.mapping.manualRepointed === 0, `manual rows re-pointed by merchant: ${first.mapping.manualRepointed} the first time, 0 the second`);
+      const [stay] = await tx.$queryRaw<{ n: bigint }[]>`SELECT count(*) n FROM "BankTransaction" t JOIN "Category" c ON c."id" = t."categoryId" WHERE t."categorySource" = 'MANUAL' AND c."name" = 'Other Costs' AND t."date" >= '2026-02-01'`;
+      must(Number(stay.n) >= 1, `the owner's other manual picks stay in Other Costs (${stay.n})`);
       const [r1] = await tx.$queryRaw<{ n: bigint }[]>`SELECT count(*) n FROM "Rule" r JOIN "Category" c ON c."id" = r."categoryId" WHERE c."key" IS NULL AND c."archived" AND r."active"`;
       must(Number(r1.n) === 0, "no active rule still points at a legacy category");
       const [r2] = await tx.$queryRaw<{ n: bigint }[]>`SELECT count(*) n FROM "BankTransaction" t JOIN "Category" c ON c."id" = t."categoryId" WHERE c."key" IS NULL AND c."archived" AND t."date" >= '2026-02-01'`;

@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import { CATEGORY_MAP, keyOf, manualTarget, ruleTarget } from "@/lib/report/mapping";
+import { normalizeDescriptor } from "@/lib/rules/normalize";
 import { isFrozen } from "@/lib/rules/apply";
 import { KINDS, type Kind } from "@/lib/rules/types";
 
@@ -13,7 +14,8 @@ import { KINDS, type Kind } from "@/lib/rules/types";
 type Client = Pick<PrismaClient, "category" | "rule" | "bankTransaction" | "monthSnapshot">;
 const KIND_SET = new Set<string>(KINDS);
 
-export type MappingResult = { rulesMoved: number; manualMoved: number; manualSkippedLocked: number };
+/** `manualRepointed` is the part of `manualMoved` that went to a merchant's dedicated line rather than its category's equivalent. */
+export type MappingResult = { rulesMoved: number; manualMoved: number; manualRepointed: number; manualSkippedLocked: number };
 
 const chunks = <T>(xs: readonly T[], n: number): T[][] => Array.from({ length: Math.ceil(xs.length / n) }, (_, i) => xs.slice(i * n, i * n + n));
 
@@ -30,7 +32,7 @@ export async function applyMapping(client: Client, businessId: string): Promise<
     return id;
   };
 
-  const result: MappingResult = { rulesMoved: 0, manualMoved: 0, manualSkippedLocked: 0 };
+  const result: MappingResult = { rulesMoved: 0, manualMoved: 0, manualRepointed: 0, manualSkippedLocked: 0 };
 
   // ---- rules
   for (const r of await client.rule.findMany({ where: { businessId } })) {
@@ -38,8 +40,8 @@ export async function applyMapping(client: Client, businessId: string): Promise<
     const t = ruleTarget({ key: r.key, kind: r.kind as Kind, categoryName: r.categoryId ? nameById.get(r.categoryId) ?? null : null }, isLegacy);
     if (!t) continue;
     const id = destination(t.to);
-    if (r.categoryId === id) continue;
-    await client.rule.update({ where: { id: r.id }, data: { categoryId: id } });
+    if (r.categoryId === id && (!t.kind || r.kind === t.kind)) continue;
+    await client.rule.update({ where: { id: r.id }, data: { categoryId: id, ...(t.kind ? { kind: t.kind } : {}) } });
     result.rulesMoved++;
   }
 
@@ -47,7 +49,7 @@ export async function applyMapping(client: Client, businessId: string): Promise<
   const [rows, snaps] = await Promise.all([
     client.bankTransaction.findMany({
       where: { businessId, categorySource: "MANUAL", OR: [{ categoryId: { in: cats.filter((c) => !c.key && c.archived).map((c) => c.id) } }, { categoryId: null, kind: { in: ["OWNER_DRAW", "OWNER_CONTRIBUTION"] } }] },
-      select: { id: true, kind: true, categoryId: true, date: true, isLate: true, adjustmentMonth: true },
+      select: { id: true, kind: true, categoryId: true, date: true, isLate: true, adjustmentMonth: true, normalizedMerchant: true, rawDescription: true },
     }),
     client.monthSnapshot.findMany({ where: { businessId, status: "LOCKED" }, select: { month: true } }),
   ]);
@@ -58,8 +60,9 @@ export async function applyMapping(client: Client, businessId: string): Promise<
       result.manualSkippedLocked++;
       continue;
     }
-    const t = manualTarget({ kind: row.kind && KIND_SET.has(row.kind) ? (row.kind as Kind) : null, categoryName: row.categoryId ? nameById.get(row.categoryId) ?? null : null }, isLegacy);
+    const t = manualTarget({ kind: row.kind && KIND_SET.has(row.kind) ? (row.kind as Kind) : null, categoryName: row.categoryId ? nameById.get(row.categoryId) ?? null : null, merchant: row.normalizedMerchant ?? normalizeDescriptor(row.rawDescription) }, isLegacy);
     if (!t) continue;
+    if (t.repointed) result.manualRepointed++;
     const id = destination(t.to);
     (byDest.get(id) ?? byDest.set(id, []).get(id)!).push(row.id);
   }

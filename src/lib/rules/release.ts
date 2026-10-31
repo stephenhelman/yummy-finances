@@ -92,7 +92,7 @@ export async function runRulesRelease(deps: ReleaseDeps): Promise<ReleaseResult>
   };
   await deps.markComplete({
     rules: rules.total, changed: applied.changed, considered: applied.considered,
-    templateCreated: template.created, templateAdopted: template.adopted, legacyArchived: template.legacyArchived, rulesMoved: mapping.rulesMoved, manualMoved: mapping.manualMoved, manualSkippedLocked: mapping.manualSkippedLocked,
+    templateCreated: template.created, templateAdopted: template.adopted, legacyArchived: template.legacyArchived, rulesMoved: mapping.rulesMoved, manualMoved: mapping.manualMoved, manualRepointed: mapping.manualRepointed, manualSkippedLocked: mapping.manualSkippedLocked,
   });
   return result;
 }

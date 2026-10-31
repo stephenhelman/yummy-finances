@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { db } from "../src/lib/db";
 import { checkGuard } from "../src/lib/predeploy-guard";
 import { CATEGORY_MAP, KIND_DEFAULT, manualTarget, ruleTarget, type Target } from "../src/lib/report/mapping";
+import { normalizeDescriptor } from "../src/lib/rules/normalize";
 import { KINDS, type Kind } from "../src/lib/rules/types";
 
 const usd = (c: number) => (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
@@ -68,8 +69,10 @@ async function main() {
   // ---- B. per rule
   const perRule = new Map<string, Agg>();
   // ---- D. flags computed from rows
-  const manualElsewhere = new Map<string, { n: number; c: number; from: string; mapped: string; rule: string }>();
+  const repointed: { date: string; merchant: string; cents: number; from: string; to: string; why: string }[] = [];
+  const stayOther = zero();
   const atm = zero();
+  const kindChange = new Map<string, { rule: string; from: string; to: string; line: string; a: Agg }>();
   const reviewLeft = zero();
 
   for (const t of data.rows) {
@@ -81,16 +84,12 @@ async function main() {
     if (t.reviewStatus === "NEEDS_REVIEW") add(reviewLeft, t.amountCents, in26(t.date));
 
     if (t.categorySource === "MANUAL") {
-      const dest = manualTarget({ kind, categoryName: nameOf(t.categoryId) }, isLegacy);
+      const merchant = t.normalizedMerchant ?? normalizeDescriptor(t.rawDescription);
+      const dest = manualTarget({ kind, categoryName: nameOf(t.categoryId), merchant }, isLegacy);
       if (dest) {
         land(dest.to, "manual", t.amountCents, t.date);
-        // would a merchant rule have put this row somewhere else? (informational: manual picks are NOT moved by merchant rules)
-        const rule = data.rules.find((r) => r.active && kind && r.kind === kind && ruleDest(r) && ruleDest(r)!.to !== dest.to && matchesLoosely(r.pattern, t.normalizedMerchant ?? t.rawDescription));
-        if (rule) {
-          const k = `${nameOf(t.categoryId) ?? kind}>${rule.key}`;
-          const m = manualElsewhere.get(k) ?? manualElsewhere.set(k, { n: 0, c: 0, from: nameOf(t.categoryId) ?? String(kind), mapped: dest.to, rule: `${rule.key} (${ruleDest(rule)!.to})` }).get(k)!;
-          m.n++; m.c += t.amountCents;
-        }
+        if (dest.repointed) repointed.push({ date: t.date.toISOString().slice(0, 10), merchant, cents: t.amountCents, from: nameOf(t.categoryId) ?? String(kind), to: dest.to, why: dest.repointed });
+        if (dest.to === "Other Costs") add(stayOther, t.amountCents, in26(t.date));
         if (!t.categoryId && kind === "OWNER_DRAW" && /\bATM\b|WITHDRAWAL|CASH APP/i.test(t.rawDescription)) add(atm, t.amountCents, in26(t.date));
       } else land(nameOf(t.categoryId) ?? `(no line) ${kind ?? ""}`, "stay", t.amountCents, t.date);
     } else if (t.ruleId && ruleById.get(t.ruleId)) {
@@ -98,9 +97,17 @@ async function main() {
       add(perRule.get(r.id) ?? perRule.set(r.id, zero()).get(r.id)!, t.amountCents, in26(t.date));
       const dest = ruleDest(r);
       land(dest ? dest.to : nameOf(r.categoryId) ?? `(no line) ${kindOf(r.kind) ?? ""}`, dest ? "rule" : "stay", t.amountCents, t.date);
+      if (dest?.kind && dest.kind !== r.kind) {
+        const k = kindChange.get(r.id) ?? kindChange.set(r.id, { rule: r.key, from: r.kind, to: dest.kind, line: dest.to, a: zero() }).get(r.id)!;
+        add(k.a, t.amountCents, in26(t.date));
+      }
     } else land(nameOf(t.categoryId) ?? `(no line) ${kind ?? "unclassified"}`, "stay", t.amountCents, t.date);
   }
 
+  for (const r of data.rules) {
+    const d = ruleDest(r);
+    if (d?.kind && d.kind !== r.kind && !kindChange.has(r.id)) kindChange.set(r.id, { rule: r.key, from: r.kind, to: d.kind, line: d.to, a: zero() });
+  }
   const out: string[] = [];
   const p = (s = "") => out.push(s);
   p(`# Category mapping proposal`);
@@ -129,7 +136,7 @@ async function main() {
     .map((r) => ({ r, dest: ruleDest(r), a: perRule.get(r.id) ?? zero() }))
     .filter((x) => x.dest)
     .sort((a, b) => b.a.c26 - a.a.c26)
-    .map(({ r, dest, a }) => [cell(r.key, 52), r.source, nameOf(r.categoryId) ?? `(none) ${r.kind}`, agg(a), dest!.to, dest!.flag ? cell(dest!.flag, 90) : ""]);
+    .map(({ r, dest, a }) => [cell(r.key, 52), r.source, nameOf(r.categoryId) ?? `(none) ${r.kind}`, agg(a), dest!.to, dest!.kind && dest!.kind !== r.kind ? `kind ${r.kind} → ${dest!.kind}` : dest!.flag ? cell(dest!.flag, 90) : ""]);
   p(table(["Rule", "Source", "Now", "Matches (n · 2026 $)", "→ Template line", "Note"], rowsB, [3]));
   const stays = data.rules.filter((r) => !ruleDest(r));
   p();
@@ -144,21 +151,32 @@ async function main() {
     .map(({ name, l, total }) => [cell(name, 46), agg(l.manual), agg(l.rule), agg(l.stay), usd(total)]);
   p(table(["Template line / destination", "From MANUAL picks", "From rules", "Already there / unchanged", "2026 $ total"], rowsC, [1, 2, 3, 4]));
   p();
-  p(`## D. Things that don't map cleanly`);
+  p(`## D. Decisions applied (all of these are in the release)`);
   p();
-  const flags: string[][] = [];
+  p(`- U-Haul → Other Expenses: STORAGE. Superior Fire → Repairs. Dropbox Sign → Office Expense: DROPBOXSERVICES. HP Instant Ink → Printing. Fidelity brokerage → Personal: Misc. Savings 2870 → Other Transfers. Lowe's → Materials & Supplies (the mis-pick corrected, rule and manual rows). Payroll taxes → Wages and Benefits.`);
+  p(`- Personal, not business (the rule's KIND changes so it stops counting as an expense): Taco Cabana → Personal: Food (owner draw); Zelle to MAMITA → Personal: Misc (owner draw); Zelle from MAMITA → Personal: Misc (owner contribution).`);
+  p(`- The card credit adjustment is a transfer, not a contribution: Other Transfers (kind internal transfer).`);
+  p(`- Your manual picks stay on your category's equivalent EXCEPT four merchants the accountant has a line for (YouTube TV, Dropbox, U-Haul, HP Instant Ink) and Lowe's (your own correction): those are re-pointed and stay MANUAL (listed below).`);
+  p(`- ATM and cash withdrawals you picked as Personal stay Personal: Misc: ${atm.n26} rows in 2026 (${usd(atm.c26)}).`);
+  p(`- Manual picks that stay in Other Costs: ${stayOther.n} rows (${usd(stayOther.c)}, all time).`);
+  p();
+  if (kindChange.size) {
+    p(`### Rules whose KIND changes (so their rows stop counting as business expenses)`);
+    p(table(["Rule", "Kind", "→ Line", "Rows (n · 2026 $)"], [...kindChange.values()].map((k) => [cell(k.rule, 50), `${k.from} → ${k.to}`, k.line, agg(k.a)]), [3]));
+    p();
+  }
+  p(`### Manual rows re-pointed by merchant (every row; they stay MANUAL)`);
+  p(table(["Date", "Merchant", "Amount", "From", "→ To", "Why"], repointed.sort((a, b) => a.date.localeCompare(b.date)).map((r) => [r.date, cell(r.merchant, 34), usd(r.cents), cell(r.from, 28), r.to, r.why]), [2]));
+  p(`${repointed.length} rows, ${usd(repointed.reduce((a, r) => a + r.cents, 0))} (all time).`);
+  p();
+  const open: string[][] = [];
   for (const [name, t] of Object.entries(CATEGORY_MAP)) {
-    const s = bySrc.get(name);
-    if (t.flag && s && (s.manual.n || s.rule.n)) flags.push([`Category: ${name}`, `${s.manual.n26} manual / ${s.rule.n26} rule rows in 2026 (${usd(s.manual.c26 + s.rule.c26)})`, `→ ${t.to}`, t.flag]);
+    const sct = bySrc.get(name);
+    if (t.flag && sct && (sct.manual.n || sct.rule.n)) open.push([`Category: ${name}`, `${sct.manual.n26 + sct.rule.n26} rows in 2026`, `→ ${t.to}`, t.flag]);
   }
-  for (const r of data.rules) {
-    const d = ruleDest(r);
-    if (d?.flag) flags.push([`Rule: ${r.key}`, `${(perRule.get(r.id) ?? zero()).n26} rows in 2026 (${usd((perRule.get(r.id) ?? zero()).c26)})`, `→ ${d.to}`, d.flag]);
-  }
-  for (const m of manualElsewhere.values()) flags.push([`Your manual picks in ${m.from}`, `${m.n} rows (${usd(m.c)}, all time)`, `→ ${m.mapped} (stay with your pick)`, `A merchant rule would say ${m.rule}. Manual picks are not moved by rules; tell me if you want these re-pointed`]);
-  if (atm.n) flags.push([`Your manual "Personal" draws that look like ATM or cash withdrawals`, `${atm.n26} rows in 2026 (${usd(atm.c26)})`, `→ Personal: Misc`, `You said ATM withdrawals belong in Other Transfers. These were your own Personal picks, so they follow the pick; say the word and I'll move this subset`]);
-  if (reviewLeft.n) flags.push([`Still in the review queue`, `${reviewLeft.n26} rows in 2026 (${usd(reviewLeft.c26)})`, `unchanged`, `The mapping does not touch unreviewed rows`]);
-  p(table(["Item", "Size", "Proposed", "Why"], flags));
+  if (reviewLeft.n) open.push([`Still in the review queue`, `${reviewLeft.n26} rows in 2026 (${usd(reviewLeft.c26)})`, `unchanged`, `The mapping does not touch unreviewed rows`]);
+  p(`### Still open`);
+  p(open.length ? table(["Item", "Size", "Proposed", "Why"], open) : `None. Every flagged item has been decided.`);
   p();
   p(`## E. Safety`);
   p(`- Idempotent: running it again finds nothing left to move.`);
@@ -168,13 +186,6 @@ async function main() {
   mkdirSync("probe-output", { recursive: true });
   writeFileSync(join("probe-output", "category-mapping-proposal.md"), `${out.join("\n")}\n`);
   console.log(`\n${out.join("\n")}\n\nWrote probe-output/category-mapping-proposal.md`);
-}
-
-/** Does a rule pattern plausibly match this text? (informational only: used to spot manual picks a merchant rule disagrees with) */
-function matchesLoosely(pattern: string, text: string): boolean {
-  const p = pattern.toUpperCase();
-  if (p.startsWith("^") || p.includes("(")) return false;
-  return text.toUpperCase().startsWith(p.trim());
 }
 
 main().catch((e) => { console.error((e as Error).message); process.exitCode = 1; }).finally(() => db.$disconnect());

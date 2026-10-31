@@ -22,7 +22,7 @@ function deps(log: string[], over: Partial<ReleaseDeps> = {}): ReleaseDeps {
     applyCategoryChanges: async () => { log.push("categories"); return { renamed: 0, added: 0 }; },
     seedTemplate: async () => { log.push("template"); return { groups: 0, created: 0, adopted: 0, unchanged: 37, legacyArchived: 0 }; },
     persistRules: async () => { log.push("persist"); return { created: 0, updated: 0, unchanged: 57, total: 57 }; },
-    applyMapping: async () => { log.push("mapping"); return { rulesMoved: 0, manualMoved: 0, manualSkippedLocked: 0 }; },
+    applyMapping: async () => { log.push("mapping"); return { rulesMoved: 0, manualMoved: 0, manualRepointed: 0, manualSkippedLocked: 0 }; },
     applyRules: async () => { log.push("apply"); return zeroApply; },
     loadSummaryRows: async () => { log.push("summary"); return rows; },
     markComplete: async () => { log.push("marker"); },
@@ -61,8 +61,8 @@ async function main() {
     assert.equal((await runRulesRelease(deps([], { persistRules: async () => ({ created: 0, updated: 1, unchanged: 56, total: 57 }) }))).alreadyUpToDate, false);
     // the template seed and the mapping count as changes too: a release that only seeded or only mapped is not a no-op
     assert.equal((await runRulesRelease(deps([], { seedTemplate: async () => ({ groups: 5, created: 35, adopted: 2, unchanged: 0, legacyArchived: 30 }) }))).alreadyUpToDate, false);
-    assert.equal((await runRulesRelease(deps([], { applyMapping: async () => ({ rulesMoved: 3, manualMoved: 0, manualSkippedLocked: 0 }) }))).alreadyUpToDate, false);
-    assert.equal((await runRulesRelease(deps([], { applyMapping: async () => ({ rulesMoved: 0, manualMoved: 12, manualSkippedLocked: 0 }) }))).alreadyUpToDate, false);
+    assert.equal((await runRulesRelease(deps([], { applyMapping: async () => ({ rulesMoved: 3, manualMoved: 0, manualRepointed: 0, manualSkippedLocked: 0 }) }))).alreadyUpToDate, false);
+    assert.equal((await runRulesRelease(deps([], { applyMapping: async () => ({ rulesMoved: 0, manualMoved: 12, manualRepointed: 2, manualSkippedLocked: 0 }) }))).alreadyUpToDate, false);
     // if the template seed fails nothing after it runs and no marker is written (prod never sits half-way)
     const halted: string[] = [];
     await assert.rejects(runRulesRelease(deps(halted, { seedTemplate: async () => { halted.push("template"); throw new Error("boom"); } })), /boom/);
