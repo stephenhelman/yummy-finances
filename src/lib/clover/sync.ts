@@ -71,6 +71,8 @@ export async function syncCloverMonth(args: {
   now?: Date;
   /** Most orders to fetch one by one per month (the list can't return old ones). Infinity for a backfill. */
   maxOrdersById?: number;
+  /** Months before `month` to include (default LOOKBACK_MONTHS). A backfill of k months passes k - 1. */
+  lookbackMonths?: number;
 }): Promise<CloverSyncReport> {
   const { businessId, timezone, month } = args;
   const maxOrdersById = args.maxOrdersById ?? ORDERS_BY_ID_PER_MONTH;
@@ -94,7 +96,8 @@ export async function syncCloverMonth(args: {
   }
   const tenders = new Map<string, TenderRow>(tenderRows.map((t) => [t.cloverId, t]));
 
-  const months = Array.from({ length: LOOKBACK_MONTHS + 1 }, (_, i) => addMonths(month, i - LOOKBACK_MONTHS));
+  const lookback = args.lookbackMonths ?? LOOKBACK_MONTHS;
+  const months = Array.from({ length: lookback + 1 }, (_, i) => addMonths(month, i - lookback));
   const lockedMonths = new Set(
     (
       await db.monthSnapshot.findMany({

@@ -101,12 +101,25 @@ DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run db:status 
 
 On **production** the template and the move of your old categories into it happen in **one step**: the [Rules release](#rules-release) (the `apply-rules` call) seeds the template, stores the rules with their template categories, moves legacy categories on rules and on your own picks to the equivalent template line, re-sorts the rest, and only then writes its "backfill complete" marker. Production therefore never sits with old categories archived and nothing mapped. `npm run categories:seed` refuses `--target prod` for this reason; it exists for dev.
 
-After the release, pull Clover orders (they carry the discounts). Clover's order **list** only returns roughly the last 90 days, so older orders are fetched by id (50 at a time) from the payments we already have. `npm run sync:clover -- --month=YYYY-MM` does this for the month and the two before it (up to 2,000 orders per month per run); for a whole year, including last year's line on the Year page, run the one-time backfill (it refuses unless `DIRECT_URL` is the allowlisted endpoint for `--target`, default dev):
+After the release, pull Clover payments, refunds and orders (orders carry the discounts). Clover's order **list** only returns roughly the last 90 days, so older orders are fetched by id (50 per request) from the payments we already have. On production this runs **inside Vercel**, three months per call, so each call stays well under the function limit (300 s; a quarter takes about a minute). Protected by `CRON_SECRET`; idempotent; the response is counts only.
 
 ```bash
-DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run sync:clover-year -- --year=2025 --target prod
-DIRECT_URL="$PROD_DIRECT_URL" DATABASE_URL="$PROD_DIRECT_URL" npm run sync:clover-year -- --year=2026 --target prod
+read -rs CRON_SECRET            # paste the production CRON_SECRET
+U=https://<project>.vercel.app/api/admin/backfill-clover
+call() { curl -s -X POST -H "Authorization: Bearer $CRON_SECRET" -H "content-type: application/json" -d "$1" "$U" | jq -c '{ok,complete,clipped,stillMissing,months:[.months[]|{month,payments:.payments.created,refunds:.refunds.created,ordersById:.orders.byId,missing:.orders.stillMissing}]}'; }
+
+# last year, for the year-over-year line (Net sales on the Year page)
+for q in 1 2 3 4; do call "{\"year\":2025,\"quarter\":$q}"; done
+# this year, so January to September have their discounts (the order list can't reach them)
+for q in 1 2 3; do call "{\"year\":2026,\"quarter\":$q}"; done
+# the current quarter is clipped to the months that exist; it normally gets its orders from the regular sync
+call '{"year":2026,"quarter":4}'
+unset CRON_SECRET
 ```
+
+Each call takes `{ "year": 2025, "quarter": 1 }` or a month range `{ "from": "2026-01", "to": "2026-03" }` (at most three months; months after the current one are dropped). Check each response: `"ok": true` and `"complete": true` (`stillMissing` 0). If `complete` is `false`, call the same body again: it carries on from what is already stored. A `409 already_running` means another backfill is still in progress (it frees itself after 15 minutes). A second pass over everything should report `created` 0 and `ordersById` 0.
+
+From your own machine against a dev database the same backfill is `npm run sync:clover-year -- --year=2025` (it refuses unless `DIRECT_URL` is the allowlisted endpoint for `--target`, default dev).
 
 It is safe to repeat and to interrupt. A paid order with no stored detail shows as a warning on the report (Discounts may be understated; Net Income is not affected, because payments are already after discounts) instead of being silently left out.
 
