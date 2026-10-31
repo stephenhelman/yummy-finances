@@ -33,6 +33,8 @@ export type MonthlyReportPayload = {
   recipients: string[];
   /** A TEST send: goes to a separate "Yummy Finances TEST" workbook, the title, PDF name, subject and email all say TEST. */
   test?: boolean;
+  /** Write the month tab and the YTD Summary row only: no PDF, no email. Used to file past months. */
+  noEmail?: boolean;
 };
 
 export type AppsScriptRequest =

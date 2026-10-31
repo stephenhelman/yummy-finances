@@ -29,7 +29,7 @@ export default async function ReportMonthPage({ params, searchParams }: { params
       </>
     );
   }
-  const { report, source, status, lockedAt, emailSentAt } = await loadReport(business, month);
+  const { report, source, status, lockedAt, emailSentAt, filedAt } = await loadReport(business, month);
   const elig = lockEligibility(month, new Date(), business.timezone);
 
   return (
@@ -42,10 +42,10 @@ export default async function ReportMonthPage({ params, searchParams }: { params
       <Notice notice={one(sp.notice)} error={one(sp.error)} />
       {status === "DRAFT" ? <p className="alert alert-warn" role="status"><strong>Draft, not final</strong>Numbers can still change until the month is locked.</p> : null}
       {status === "LOCKED" ? (
-        <p className={`alert ${emailSentAt ? "alert-ok" : "alert-warn"}`} role="status">
-          <strong>{emailSentAt ? "Locked and sent" : "Locked, but not sent"}</strong>
+        <p className={`alert ${emailSentAt || filedAt ? "alert-ok" : "alert-warn"}`} role="status">
+          <strong>{emailSentAt ? "Locked and sent" : filedAt ? "Locked and filed (no email sent)" : "Locked, but not sent"}</strong>
           {lockedAt ? `Locked ${formatDateTime(lockedAt, business.timezone)}. ` : ""}
-          {emailSentAt ? `Last sent ${formatDateTime(emailSentAt, business.timezone)}.` : "Sending hasn't succeeded yet: use Re-send."}
+          {emailSentAt ? `Last sent ${formatDateTime(emailSentAt, business.timezone)}.` : filedAt ? `Written to the workbook ${formatDateTime(filedAt, business.timezone)}. Re-send emails it.` : "Sending hasn't succeeded yet: use Re-send."}
         </p>
       ) : null}
 

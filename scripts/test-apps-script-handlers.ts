@@ -100,5 +100,35 @@ api.handleMonthlyReport_(payload("true" as never));
 assert.equal(created.length, 2);
 assert.ok(!/TEST/.test(sent.at(-1)!.subject));
 
+// ---- noEmail: file a month (tab + YTD row) without sending anything
+{
+  const mailsBefore = sent.length, pdfsBefore = pdfNames.length, booksBefore = created.length;
+  const filing = (month: number) => ({ ...payload(), month, noEmail: true, recipients: [] });
+  const r = api.handleMonthlyReport_(filing(8)) as { ok: boolean; emailed?: boolean; sheetUrl?: string };
+  assert.equal(r.ok, true);
+  assert.equal(r.emailed, false);
+  assert.match(String(r.sheetUrl), /Yummy Finances 2026#gid=7$/, "the real workbook, not the TEST one");
+  assert.equal(sent.length, mailsBefore, "no email of any kind");
+  assert.equal(pdfNames.length, pdfsBefore, "no PDF is even exported");
+  assert.equal(created.length, booksBefore, "it uses the existing real workbook");
+  const book = books.get("Yummy Finances 2026")!;
+  assert.ok(book.getSheetByName("2026-08"), "the month tab is written");
+  assert.ok(book.getSheetByName("YTD Summary"), "and the YTD Summary is rebuilt");
+  assert.ok(!/TEST/.test(String(book.getSheetByName("2026-08")!.rows[0][0])), "a filed month is a real one: no TEST label");
+  const ytdHeader = book.getSheetByName("YTD Summary")!.rows[0] as string[];
+  assert.deepEqual(ytdHeader.slice(1, -1), ["2026-08", "2026-09"], "the YTD has a column per filed month");
+  // idempotent: filing the same month again rewrites the tab, never adds one
+  const tabs = () => book.getSheets().map((s) => s.name).sort().join();
+  const before = tabs();
+  api.handleMonthlyReport_(filing(8));
+  assert.equal(tabs(), before, "no duplicate tabs");
+  assert.equal(sent.length, mailsBefore);
+  // recipients are only optional when nothing is being sent
+  assert.throws(() => api.handleMonthlyReport_({ ...payload(), recipients: [] }), /invalid recipients/, "a real send still needs recipients");
+  assert.throws(() => api.handleMonthlyReport_({ ...payload(), noEmail: "true", recipients: [] }), /invalid recipients/, "only a real boolean true skips the email");
+  assert.throws(() => api.handleMonthlyReport_({ ...payload(), noEmail: true, recipients: ["not-an-email"] }), /invalid recipients/, "recipients that are given must still be valid");
+  assert.equal(sent.length, mailsBefore, "refused requests send nothing");
+}
+
 // ---- routing: an unknown type is still refused
 console.log("apps-script handlers: all checks passed");

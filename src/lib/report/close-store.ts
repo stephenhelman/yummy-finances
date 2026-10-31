@@ -2,9 +2,10 @@ import type { Prisma } from "@/generated/prisma/client";
 import type { MonthSnapshot } from "@/generated/prisma/client";
 import { callAppsScript } from "@/lib/apps-script";
 import { db } from "@/lib/db";
-import { asReport, buildTestPayload, sendMonthlyReport } from "@/lib/report";
+import { asReport, buildMonthlyReportPayload, buildTestPayload, sendMonthlyReport } from "@/lib/report";
 import { buildLiveReport } from "@/lib/report/load";
 import type { CloseDeps, Snapshot } from "@/lib/report/close-month";
+import type { FileDeps } from "@/lib/report/file-months";
 import { lockMonth, recordDelivery } from "@/lib/snapshots";
 
 type Business = { id: string; name: string; timezone: string; salesTaxInRevenue: boolean; ownerEmail: string; ccEmail: string | null };
@@ -40,6 +41,17 @@ export function prismaCloseDeps(business: Business, actor: string, now: () => Da
     },
     audit: async (action, payload) => {
       await db.auditLog.create({ data: { businessId: business.id, actor, action, entity: "MonthSnapshot", payload: payload as Prisma.InputJsonValue } });
+    },
+  };
+}
+
+/** The close deps plus "file": write the locked month's tab and the YTD row to the real workbook, with NO email. */
+export function prismaFileDeps(business: Business, actor: string, now?: () => Date): FileDeps {
+  return {
+    ...prismaCloseDeps(business, actor, now),
+    file: async (snap) => {
+      const payload = buildMonthlyReportPayload({ month: snap.month, status: "LOCKED", dataJson: snap.dataJson as never }, business);
+      await callAppsScript({ type: "monthly_report", ...payload, noEmail: true });
     },
   };
 }

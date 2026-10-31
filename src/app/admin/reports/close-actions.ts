@@ -7,7 +7,8 @@ import { claimLock, releaseLock } from "@/lib/job-lock";
 import { classificationIsReady, withMessage } from "@/lib/review/gate";
 import { lockEligibility } from "@/lib/report/close";
 import { lockAndSend, resend, sendTest, type CloseResult } from "@/lib/report/close-month";
-import { prismaCloseDeps } from "@/lib/report/close-store";
+import { prismaCloseDeps, prismaFileDeps } from "@/lib/report/close-store";
+import { fileMonths, monthRange } from "@/lib/report/file-months";
 import { buildLiveReport } from "@/lib/report/load";
 
 // Lock & send, Re-send and Send test report. Each re-checks admin, readiness and eligibility itself (a form post can be replayed
@@ -58,4 +59,37 @@ export async function resendAction(formData: FormData): Promise<void> {
 
 export async function sendTestAction(formData: FormData): Promise<void> {
   await run(formData, "send-test", ({ deps, m }) => sendTest(deps, m), "Test report sent to the owner's email (marked TEST). Nothing was locked.");
+}
+
+/**
+ * One-time "Lock & file past months": lock a range of past months and write their tabs and YTD rows to the real workbook, with NO
+ * email. All months are checked before any is locked (see src/lib/report/file-months.ts); the form must acknowledge warnings per month.
+ */
+export async function fileMonthsAction(formData: FormData): Promise<void> {
+  const from = String(formData.get("from") ?? ""), to = String(formData.get("to") ?? "");
+  const back = `/admin/reports/file-past?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const months = monthRange(from, to);
+  if (typeof months === "string") redirect(withMessage("/admin/reports/file-past", "error", months));
+
+  const { actor } = await requireAdmin();
+  const business = await getBusiness();
+  if (!(await classificationIsReady(business.id))) redirect(withMessage(back, "error", "Transactions haven't been categorized yet."));
+  if (!(await claimLock(business.id, "file-past-months", "15 minutes"))) redirect(withMessage(back, "error", "Filing is already running. Give it a minute, then check the Reports list."));
+
+  let result: Awaited<ReturnType<typeof fileMonths>>;
+  try {
+    const acknowledged = new Set(formData.getAll("ack").map(String));
+    result = await fileMonths(prismaFileDeps(business, actor), months, { acknowledged });
+  } finally {
+    await releaseLock(business.id, "file-past-months");
+  }
+  revalidatePath("/admin/reports", "layout");
+
+  if (!result.ok && result.reason === "problems") redirect(withMessage(back, "error", `Nothing was locked. ${result.problems.map((p) => `${p.month}: ${p.message}`).join(" ")}`));
+  const done = result.done.length;
+  if (!result.ok) {
+    redirect(withMessage(back, "error", `Stopped at ${result.failedAt.month}: ${result.failedAt.message} ${done} month${done === 1 ? "" : "s"} before it ${done === 1 ? "was" : "were"} locked and filed. Run it again to carry on.`));
+  }
+  const fresh = result.done.filter((d) => d.locked).length;
+  redirect(withMessage("/admin/reports", "notice", `Locked and filed ${done} month${done === 1 ? "" : "s"} (${fresh} newly locked). No email was sent.`));
 }

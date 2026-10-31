@@ -117,14 +117,16 @@ function handleNotice_(req) {
  *  lines:    [{section, label, cents}]
  *  netCents (optional), netAfterSection? (print Net Income after this section; default: last),
  *  cashNotes: string[], warnings: string[], recipients: string[],
+ *  noEmail? (true = write the month tab and rebuild the YTD Summary tab, but export no PDF and send NO email; recipients may then be empty),
  *  test? (true = a TEST send: separate "Yummy Finances TEST <year>" workbook; the title, PDF name, subject and email all say TEST)
  */
 function handleMonthlyReport_(req) {
   var year = Number(req.year), month = Number(req.month);
   if (!(year >= 2000 && year <= 2100 && month >= 1 && month <= 12) || year % 1 || month % 1) throw new Error('invalid year/month');
   if (!Array.isArray(req.sections) || !Array.isArray(req.lines)) throw new Error('invalid sections/lines');
+  var noEmail = req.noEmail === true;
   var recipients = Array.isArray(req.recipients) ? req.recipients : [];
-  if (!recipients.length || recipients.length > 10 || !recipients.every(function (r) { return typeof r === 'string' && EMAIL_RE.test(r); })) throw new Error('invalid recipients');
+  if ((!noEmail && !recipients.length) || recipients.length > 10 || !recipients.every(function (r) { return typeof r === 'string' && EMAIL_RE.test(r); })) throw new Error('invalid recipients');
   var tab = year + '-' + (month < 10 ? '0' : '') + month;
   var test = req.test === true;
   var business = String(req.businessName || BRAND);
@@ -135,6 +137,8 @@ function handleMonthlyReport_(req) {
   var sheet = writeMonthTab_(ss, tab, test ? 'TEST - NOT A REAL REPORT - ' + business : business, req, warnings, cashNotes);
   rebuildYtd_(ss);
   SpreadsheetApp.flush();
+  // filing only: the tab and the YTD row are written, nothing is exported or emailed
+  if (noEmail) return { ok: true, emailed: false, sheetUrl: ss.getUrl() + '#gid=' + sheet.getSheetId() };
 
   var pdf = exportTabPdf_(ss, sheet, (test ? 'TEST ' : '') + business + ' P&L ' + tab + '.pdf');
   var url = ss.getUrl();

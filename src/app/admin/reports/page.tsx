@@ -44,6 +44,14 @@ export default async function ReportsPage({ searchParams }: { searchParams: Para
         <span className="btn btn-secondary btn-sm">Open</span>
       </Link>
 
+      <Link href="/admin/reports/file-past" className="card year-link">
+        <span className="txn-main">
+          <span className="txn-merchant">Lock &amp; file past months</span>
+          <span className="small muted">One time: lock a range of past months and write them to the workbook, with no email</span>
+        </span>
+        <span className="btn btn-secondary btn-sm">Open</span>
+      </Link>
+
       <ul className="txn-list">
         {months.map((m) => {
           const locked = snaps.get(m) === "LOCKED";

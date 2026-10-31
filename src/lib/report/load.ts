@@ -14,7 +14,7 @@ import { KINDS } from "@/lib/rules/types";
 const KIND_SET = new Set<string>(KINDS);
 type Business = { id: string; timezone: string; salesTaxInRevenue: boolean };
 
-export type LoadedReport = { report: Report; source: "live" | "snapshot"; status: "DRAFT" | "LOCKED"; lockedAt?: Date | null; emailSentAt?: Date | null };
+export type LoadedReport = { report: Report; source: "live" | "snapshot"; status: "DRAFT" | "LOCKED"; lockedAt?: Date | null; emailSentAt?: Date | null; /** written to the workbook by "Lock & file past months" (no email) */ filedAt?: Date | null };
 
 export async function loadReport(business: Business, month: string): Promise<LoadedReport> {
   await requireClassification(db, business.id);
@@ -22,7 +22,10 @@ export async function loadReport(business: Business, month: string): Promise<Loa
   const snap = await db.monthSnapshot.findUnique({ where: { businessId_month: { businessId: business.id, month } } });
   if (snap?.status === "LOCKED") {
     const stored = asReport(snap.dataJson);
-    if (stored) return { report: stored, source: "snapshot", status: "LOCKED", lockedAt: snap.lockedAt, emailSentAt: snap.emailSentAt };
+    if (stored) {
+      const filed = await db.auditLog.findFirst({ where: { businessId: business.id, action: "report.file", payload: { path: ["month"], equals: month } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+      return { report: stored, source: "snapshot", status: "LOCKED", lockedAt: snap.lockedAt, emailSentAt: snap.emailSentAt, filedAt: filed?.createdAt ?? null };
+    }
     // locked before this layout existed: fall through and show it live, labelled
   }
 
