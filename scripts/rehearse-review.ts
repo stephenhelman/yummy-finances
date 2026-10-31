@@ -50,9 +50,10 @@ async function main() {
       if (res.ok) console.log(`    rule saved: ${res.rulesSaved}, other rows changed: ${res.reapplied?.changed}, skipped manual ${res.reapplied?.skippedManual}, skipped locked ${res.reapplied?.skippedLocked}`);
       const row = await tx.bankTransaction.findUniqueOrThrow({ where: { id: target.id } });
       must(row.categorySource === "MANUAL" && row.reviewStatus === "REVIEWED" && row.categoryId === supplies.id, "the clicked row is MANUAL / REVIEWED / Supplies");
-      const rule = await tx.rule.findFirst({ where: { businessId: business.id, key: { startsWith: "user:always:" } } });
-      must(rule?.confirmed && rule.active && rule.source === "USER", "a confirmed, active USER rule was created");
       const audit = await tx.auditLog.findFirst({ where: { businessId: business.id, action: "txn.classify" }, orderBy: { createdAt: "desc" } });
+      const ruleKey = ((audit?.payload as { rules?: { key: string }[] } | null)?.rules ?? [])[0]?.key; // "user:always:…" or "zelle:…" for a Zelle row
+      const rule = ruleKey ? await tx.rule.findUnique({ where: { businessId_key: { businessId: business.id, key: ruleKey } } }) : null;
+      must(rule?.confirmed && rule.active && rule.source === "USER", `a confirmed, active USER rule was created (${ruleKey})`);
       must(audit?.actor === "rehearsal", "the change is in the audit log with its actor");
       must((await fingerprint()) !== before, "classification changed");
 
